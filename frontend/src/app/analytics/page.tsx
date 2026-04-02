@@ -447,7 +447,7 @@ export default function Analytics() {
                       </td>
                       <td className="px-6 py-4">{base.total_cost != null ? String(base.total_cost) : "—"}</td>
                       <td className="px-6 py-4 text-xs">
-                        {base.tor}/{base.toy}/{base.tog}
+                        {String(base.tor ?? "—")}/{String(base.toy ?? "—")}/{String(base.tog ?? "—")}
                       </td>
                     </tr>
                   ) : null}
@@ -465,7 +465,8 @@ export default function Analytics() {
                         {opt.kpi?.total_cost != null ? String(opt.kpi.total_cost) : "—"}
                       </td>
                       <td className="px-6 py-4 text-xs">
-                        {opt.kpi?.tor}/{opt.kpi?.toy}/{opt.kpi?.tog}
+                        {String(opt.kpi?.tor ?? "—")}/{String(opt.kpi?.toy ?? "—")}/
+                        {String(opt.kpi?.tog ?? "—")}
                       </td>
                     </tr>
                   ) : null}
