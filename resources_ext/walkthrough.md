@@ -39,4 +39,4 @@ Adhering to the *Premium Aesthetics* and the `Blueprint(1).docx` layouts, I buil
 - The UI strictly adheres to the provided text constraints, converting the raw layout sketch into a modern, glowing Tailwind CSS masterpiece.
 
 > [!TIP]
-> You can now test the application by running `docker-compose up --build` at the root directory `/opt/homebrew/var/www/teaching/ddmrp`. Ensure your ports `8000` (FastAPI) and `3000` (Next.js) are free.
+> You can now test the application by running `docker-compose up --build` at the root directory `/opt/homebrew/var/www/teaching/ddmrp`. Ensure your ports `8000` (FastAPI) and `3001` (Next.js) are free.
