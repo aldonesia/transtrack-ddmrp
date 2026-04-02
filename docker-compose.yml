@@ -38,7 +38,7 @@ services:
       - "3001:3001"
     environment:
       - PORT=3001
-      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NEXT_PUBLIC_API_URL=transtrack-ddmrp-api.skom.my.id
     depends_on:
       - backend
 
