@@ -1,7 +1,24 @@
-/** Public API origin (no trailing slash). Set at build time via NEXT_PUBLIC_API_URL. */
-const API_BASE = (
-  process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000"
-).replace(/\/+$/, "");
+/** Production API — never use localhost from an HTTPS public page (browser blocks private-network access). */
+const PRODUCTION_API = "https://transtrack-ddmrp-api.skom.my.id";
+const LOCAL_DEV_API = "http://localhost:8000";
+
+/**
+ * Public API origin (no trailing slash).
+ * - Prefer `NEXT_PUBLIC_API_URL` from `.env.development` / `.env.production` / Docker build.
+ * - If missing in the bundle (old cache), infer from `window.location` on the client.
+ */
+export function getApiBase(): string {
+  const env = process.env.NEXT_PUBLIC_API_URL;
+  if (typeof env === "string" && env.trim().length > 0) {
+    return env.trim().replace(/\/+$/, "");
+  }
+  if (typeof window !== "undefined") {
+    const h = window.location.hostname;
+    if (h === "localhost" || h === "127.0.0.1") return LOCAL_DEV_API;
+    if (h === "transtrack-ddmrp.skom.my.id") return PRODUCTION_API;
+  }
+  return PRODUCTION_API;
+}
 
 export type DatasetStatus = {
   source: string;
@@ -40,13 +57,13 @@ export type MasterSku = {
 };
 
 export async function getDatasetStatus(): Promise<DatasetStatus> {
-  const r = await fetch(`${API_BASE}/api/analytics/dataset-status`);
+  const r = await fetch(`${getApiBase()}/api/analytics/dataset-status`);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
 
 export async function listSkus(): Promise<{ skus: SkuRow[] }> {
-  const r = await fetch(`${API_BASE}/api/analytics/skus`);
+  const r = await fetch(`${getApiBase()}/api/analytics/skus`);
   if (!r.ok) {
     const j = await r.json().catch(() => ({}));
     throw new Error((j as { detail?: string }).detail ?? r.statusText);
@@ -55,7 +72,7 @@ export async function listSkus(): Promise<{ skus: SkuRow[] }> {
 }
 
 export async function listMasterSkus(): Promise<{ skus: MasterSku[] }> {
-  const r = await fetch(`${API_BASE}/api/master/skus`);
+  const r = await fetch(`${getApiBase()}/api/master/skus`);
   if (!r.ok) {
     const j = await r.json().catch(() => ({}));
     throw new Error((j as { detail?: string }).detail ?? r.statusText);
@@ -64,7 +81,7 @@ export async function listMasterSkus(): Promise<{ skus: MasterSku[] }> {
 }
 
 export async function saveMasterSku(body: Record<string, unknown>) {
-  const r = await fetch(`${API_BASE}/api/master/skus`, {
+  const r = await fetch(`${getApiBase()}/api/master/skus`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -77,13 +94,13 @@ export async function saveMasterSku(body: Record<string, unknown>) {
 }
 
 export function demandTemplateUrl(): string {
-  return `${API_BASE}/api/master/template/demand`;
+  return `${getApiBase()}/api/master/template/demand`;
 }
 
 export async function uploadDemandExcel(file: File) {
   const fd = new FormData();
   fd.append("file", file);
-  const r = await fetch(`${API_BASE}/api/master/upload/demand`, {
+  const r = await fetch(`${getApiBase()}/api/master/upload/demand`, {
     method: "POST",
     body: fd,
   });
@@ -95,7 +112,7 @@ export async function uploadDemandExcel(file: File) {
 }
 
 export async function runForecast(sku: string | number) {
-  const r = await fetch(`${API_BASE}/api/analytics/forecast`, {
+  const r = await fetch(`${getApiBase()}/api/analytics/forecast`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ sku: String(sku) }),
@@ -111,7 +128,7 @@ export async function runOptimize(
   sku: string | number,
   opts: { sl_target?: number; pop_size?: number; n_gen?: number; include_baseline?: boolean } = {}
 ) {
-  const r = await fetch(`${API_BASE}/api/analytics/optimize`, {
+  const r = await fetch(`${getApiBase()}/api/analytics/optimize`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
