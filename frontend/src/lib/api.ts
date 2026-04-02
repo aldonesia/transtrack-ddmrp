@@ -1,27 +1,22 @@
-/** Production API — never call localhost from the public HTTPS site (browser blocks it). */
+/** Production API — never use localhost from an HTTPS public page (browser blocks private-network access). */
 const PRODUCTION_API = "https://transtrack-ddmrp-api.skom.my.id";
 const LOCAL_DEV_API = "http://localhost:8000";
 
 /**
  * Public API origin (no trailing slash).
- *
- * On the **browser**, the page hostname wins **before** `NEXT_PUBLIC_*` (which is inlined at
- * build time and can wrongly be `http://localhost:8000` if the image was built without prod env).
+ * - Prefer `NEXT_PUBLIC_API_URL` from `.env.development` / `.env.production` / Docker build.
+ * - If missing in the bundle (old cache), infer from `window.location` on the client.
  */
 export function getApiBase(): string {
+  const env = process.env.NEXT_PUBLIC_API_URL;
+  if (typeof env === "string" && env.trim().length > 0) {
+    return env.trim().replace(/\/+$/, "");
+  }
   if (typeof window !== "undefined") {
     const h = window.location.hostname;
-    if (h === "transtrack-ddmrp.skom.my.id") {
-      return PRODUCTION_API;
-    }
-    if (h === "localhost" || h === "127.0.0.1") {
-      const env = process.env.NEXT_PUBLIC_API_URL?.trim().replace(/\/+$/, "") ?? "";
-      return env.length > 0 ? env : LOCAL_DEV_API;
-    }
+    if (h === "localhost" || h === "127.0.0.1") return LOCAL_DEV_API;
+    if (h === "transtrack-ddmrp.skom.my.id") return PRODUCTION_API;
   }
-
-  const env = process.env.NEXT_PUBLIC_API_URL?.trim().replace(/\/+$/, "") ?? "";
-  if (env.length > 0) return env;
   return PRODUCTION_API;
 }
 

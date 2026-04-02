@@ -3,13 +3,13 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
-from backend.database import engine, get_db
-from backend.models import Base
+from database import engine, get_db
+from models import Base
 from sqlalchemy.orm import Session
 from fastapi import Depends
-from backend.services.ddmrp_logic import optimize_buffer
-from backend.api.analytics import router as analytics_router
-from backend.api.master import router as master_router
+from services.ddmrp_logic import optimize_buffer
+from api.analytics import router as analytics_router
+from api.master import router as master_router
 
 # Automatically create tables (in production use Alembic)
 Base.metadata.create_all(bind=engine)

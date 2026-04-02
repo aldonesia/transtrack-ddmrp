@@ -14,8 +14,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from backend.database import get_db
-from backend.models import DailyRecord, SKUMaster
+from database import get_db
+from models import DailyRecord, SKUMaster
 
 router = APIRouter(prefix="/api/master", tags=["master"])
 

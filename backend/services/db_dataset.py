@@ -10,7 +10,7 @@ import pandas as pd
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from backend.models import DailyRecord, SKUMaster
+from models import DailyRecord, SKUMaster
 
 
 def _master_row_dict(m: SKUMaster) -> Dict[str, Any]:

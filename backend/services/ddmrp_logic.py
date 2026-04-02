@@ -1,7 +1,7 @@
 import pandas as pd
 import numpy as np
 from sqlalchemy.orm import Session
-from backend.models import SKUMaster, DDMRPBuffer, DailyRecord
+from models import SKUMaster, DDMRPBuffer, DailyRecord
 
 def calculate_forecast(sku: str, history_df: pd.DataFrame, horizon: int) -> pd.DataFrame:
     """

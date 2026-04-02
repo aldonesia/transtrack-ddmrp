@@ -8,9 +8,9 @@ from typing import Any, Dict, Optional
 import numpy as np
 import pandas as pd
 
-from backend.services.data_loader import get_sku_demand, get_sku_params
-from backend.services.hybrid_forecast import build_forecast_series_for_simulation, run_forecast
-from backend.services.hybrid_optimizer import GeneticOptimizer, classify_sku, simulate_ddmrp
+from services.data_loader import get_sku_demand, get_sku_params
+from services.hybrid_forecast import build_forecast_series_for_simulation, run_forecast
+from services.hybrid_optimizer import GeneticOptimizer, classify_sku, simulate_ddmrp
 
 
 def _norm_sku(sku) -> str:
