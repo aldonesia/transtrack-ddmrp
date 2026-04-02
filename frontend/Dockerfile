@@ -6,6 +6,11 @@ COPY package*.json ./
 RUN npm install
 
 COPY . .
+
+# Inlined into the browser bundle — must be set when building the image
+ARG NEXT_PUBLIC_API_URL=https://transtrack-ddmrp-api.skom.my.id
+ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 

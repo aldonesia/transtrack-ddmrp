@@ -18,7 +18,10 @@ app = FastAPI(title="DDMRP API")
 app.include_router(analytics_router)
 app.include_router(master_router)
 
-_cors = os.getenv("CORS_ORIGINS", "http://localhost:3001")
+_cors = os.getenv(
+    "CORS_ORIGINS",
+    "http://localhost:3001,https://transtrack-ddmrp.skom.my.id",
+)
 _allow_origins = [o.strip() for o in _cors.split(",") if o.strip()]
 
 app.add_middleware(
