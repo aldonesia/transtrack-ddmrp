@@ -4,12 +4,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 from database import engine, get_db
-from models import Base
+from models import Base, DDMRPBuffer, DDMRPBufferDetail
 from sqlalchemy.orm import Session
 from fastapi import Depends
 from services.ddmrp_logic import optimize_buffer
 from api.analytics import router as analytics_router
 from api.master import router as master_router
+from datetime import timedelta
+import math
 
 # Automatically create tables (in production use Alembic)
 Base.metadata.create_all(bind=engine)
@@ -37,17 +39,106 @@ def read_root():
     return {"message": "Welcome to DDMRP API"}
 
 @app.get("/api/dashboard-summary")
-def get_dashboard_summary():
-    # Mock summary based on Blueprint
+def get_dashboard_summary(db: Session = Depends(get_db)):
+    active_buffers = (
+        db.query(DDMRPBuffer)
+        .filter(DDMRPBuffer.status == "Active")
+        .order_by(DDMRPBuffer.id.desc())
+        .all()
+    )
+
+    total_sku = int(len(active_buffers))
+    if total_sku == 0:
+        return {
+            "source": "database",
+            "total_sku": 0,
+            "zona_merah": 0,
+            "perlu_replenishment": 0,
+            "open_order": 0,
+            "buffer_active": None,
+            "fill_rate": None,
+            "csl": None,
+            "total_cost": None,
+            "message": "Belum ada buffer aktif. Jalankan forecast + DDMRP + GA di tab Analytics.",
+            "top_critical": [],
+        }
+
+    zona_merah = 0
+    perlu_replenishment = 0
+    open_order = 0
+
+    top_critical: list[dict] = []
+
+    for buf in active_buffers:
+        if not buf.start_date or not buf.dlt:
+            continue
+        start = buf.start_date
+        end = start + timedelta(days=int(buf.dlt) - 1)
+
+        today_detail = (
+            db.query(DDMRPBufferDetail)
+            .filter(
+                DDMRPBufferDetail.buffer_id == buf.id,
+                DDMRPBufferDetail.date == start,
+            )
+            .first()
+        )
+
+        zone_today = getattr(today_detail, "zone", None) if today_detail else None
+        order_today = float(getattr(today_detail, "order_qty", 0) or 0) if today_detail else 0.0
+        nfe_today = float(getattr(today_detail, "nfe", 0) or 0) if today_detail else 0.0
+
+        any_order = (
+            db.query(DDMRPBufferDetail.id)
+            .filter(
+                DDMRPBufferDetail.buffer_id == buf.id,
+                DDMRPBufferDetail.date >= start,
+                DDMRPBufferDetail.date <= end,
+                DDMRPBufferDetail.order_qty > 0,
+            )
+            .first()
+            is not None
+        )
+
+        if zone_today == "RED":
+            zona_merah += 1
+        if order_today > 0:
+            perlu_replenishment += 1
+        if any_order:
+            open_order += 1
+
+        if zone_today == "RED" or order_today > 0:
+            priority_status = "critical" if zone_today == "RED" else "warning"
+            action = f"Order {math.ceil(order_today)}" if order_today > 0 else "—"
+            top_critical.append(
+                {
+                    "sku": buf.sku,
+                    "nfe": nfe_today,
+                    "toy": float(buf.toy or 0),
+                    "tog": float(buf.tog or 0),
+                    "action": action,
+                    "status": priority_status,
+                }
+            )
+
+    top_critical.sort(
+        key=lambda r: (0 if r.get("status") == "critical" else 1, float(r.get("nfe") or 0))
+    )
+
+    latest = active_buffers[0].version if active_buffers else None
+
     return {
-        "total_sku": 250,
-        "zona_merah": 18,
-        "perlu_replenishment": 22,
-        "open_order": 15,
-        "buffer_active": "v2026.03",
-        "fill_rate": 96.1,
-        "csl": 94.8,
-        "total_cost": 74500000
+        "source": "database",
+        "total_sku": total_sku,
+        "zona_merah": int(zona_merah),
+        "perlu_replenishment": int(perlu_replenishment),
+        "open_order": int(open_order),
+        "buffer_active": latest,
+        "fill_rate": None,
+        "csl": None,
+        "total_cost": None,
+        "message": None,
+        "top_critical": top_critical[:5],
     }
 
 @app.get("/api/replenishment-recommendation")

@@ -1,27 +1,21 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { getApiBase } from "@/lib/api";
 
 export default function Dashboard() {
   const [data, setData] = useState<any>(null);
 
   useEffect(() => {
-    // Optionally fetch from the actual FastAPI backend (if running)
-    // fetch('http://localhost:8000/api/dashboard-summary')
-    //   .then(res => res.json())
-    //   .then(setData)
-    //   .catch(err => console.error(err));
-    // Fallback Mock Data:
-    setData({
-      total_sku: 250,
-      zona_merah: 18,
-      perlu_replenishment: 22,
-      open_order: 15,
-      buffer_active: "v2026.03",
-      fill_rate: 96.1,
-      total_cost: 74.5,
-      csl: 94.8
-    });
+    fetch(`${getApiBase()}/api/dashboard-summary`)
+      .then((res) => res.json())
+      .then(setData)
+      .catch((err) => {
+        // Keep UI resilient if backend is down.
+        // eslint-disable-next-line no-console
+        console.error(err);
+        setData(null);
+      });
   }, []);
 
   if (!data) {
@@ -31,6 +25,9 @@ export default function Dashboard() {
       </div>
     );
   }
+
+  const topCritical = Array.isArray(data.top_critical) ? data.top_critical : [];
+  const fillRate = typeof data.fill_rate === "number" ? data.fill_rate : null;
 
   return (
     <div className="space-y-6 animate-in fade-in zoom-in duration-500">
@@ -80,21 +77,35 @@ export default function Dashboard() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
-                {[
-                  { sku: "A001 - Produk A", nfe: 15, toy: 80, tog: 115, action: "Order 100", status: "critical" },
-                  { sku: "A008 - Produk B", nfe: 22, toy: 55, tog: 80, action: "Order 60", status: "warning" },
-                  { sku: "A021 - Produk C", nfe: 10, toy: 48, tog: 70, action: "Order 60", status: "critical" }
-                ].map((row, i) => (
-                  <tr key={i} className="hover:bg-slate-800/50 transition-colors">
-                    <td className="px-4 py-3 font-semibold text-white">{row.sku}</td>
-                    <td className="px-4 py-3"><span className={`px-2 py-1 rounded text-xs font-bold ${row.status === 'critical' ? 'bg-red-900/40 text-red-400' : 'bg-amber-900/40 text-amber-400'}`}>{row.nfe}</span></td>
-                    <td className="px-4 py-3 text-slate-400">{row.toy}</td>
-                    <td className="px-4 py-3 text-slate-400">{row.tog}</td>
-                    <td className="px-4 py-3 text-right text-blue-400 font-medium cursor-pointer hover:text-blue-300">
-                      {row.action}
+                {topCritical.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-4 text-center text-slate-500">
+                      Tidak ada data Top SKU Kritis (belum ada buffer aktif / belum ada order).
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  topCritical.map((row: any, i: number) => (
+                    <tr key={`${row.sku}-${i}`} className="hover:bg-slate-800/50 transition-colors">
+                      <td className="px-4 py-3 font-semibold text-white">{row.sku}</td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={`px-2 py-1 rounded text-xs font-bold ${
+                            row.status === "critical"
+                              ? "bg-red-900/40 text-red-400"
+                              : "bg-amber-900/40 text-amber-400"
+                          }`}
+                        >
+                          {row.nfe}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-slate-400">{row.toy}</td>
+                      <td className="px-4 py-3 text-slate-400">{row.tog}</td>
+                      <td className="px-4 py-3 text-right text-blue-400 font-medium cursor-pointer hover:text-blue-300">
+                        {row.action}
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -105,21 +116,23 @@ export default function Dashboard() {
            <ul className="space-y-4">
               <li className="flex justify-between items-center bg-slate-800/50 p-3 rounded-lg border border-slate-700">
                  <span className="text-slate-300 text-sm">Order hari ini</span>
-                 <span className="font-bold text-blue-400">15 SKU</span>
+                 <span className="font-bold text-blue-400">{data.perlu_replenishment ?? 0} SKU</span>
               </li>
               <li className="flex justify-between items-center bg-slate-800/50 p-3 rounded-lg border border-slate-700">
                  <span className="text-slate-300 text-sm">Receipt hari ini</span>
-                 <span className="font-bold text-emerald-400">6 SKU</span>
+                 <span className="font-bold text-emerald-400">—</span>
               </li>
               <li className="flex justify-between items-center bg-red-900/20 p-3 rounded-lg border border-red-900/40">
                  <span className="text-red-300 text-sm font-medium">Stockout risk</span>
-                 <span className="font-bold text-red-400">12 SKU</span>
+                 <span className="font-bold text-red-400">{data.zona_merah ?? 0} SKU</span>
               </li>
            </ul>
            <div className="mt-6 p-4 rounded-xl bg-gradient-to-br from-indigo-900/40 to-purple-900/40 border border-indigo-800/50 relative overflow-hidden">
               <div className="relative z-10">
                 <p className="text-xs font-medium text-indigo-300 uppercase mb-1">Fill Rate Est.</p>
-                <h3 className="text-3xl font-extrabold text-white">{data.fill_rate}%</h3>
+                  <h3 className="text-3xl font-extrabold text-white">
+                    {fillRate != null ? `${fillRate}%` : "N/A"}
+                  </h3>
               </div>
               <div className="absolute -right-4 -bottom-4 w-20 h-20 bg-indigo-500 rounded-full blur-2xl opacity-30"></div>
            </div>
