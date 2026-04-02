@@ -155,6 +155,11 @@ export default function Analytics() {
   const opt = optimize?.optimized as { fv_opt?: number; ltf_opt?: number; kpi?: Record<string, unknown> } | undefined;
   const base = optimize?.baseline as Record<string, unknown> | undefined;
 
+  const bestMetrics =
+    forecast?.best_metrics != null && typeof forecast.best_metrics === "object"
+      ? (forecast.best_metrics as Record<string, unknown>)
+      : null;
+
   return (
     <div className="space-y-6 animate-in fade-in zoom-in duration-500">
       <div className="flex items-center justify-between pb-4 border-b border-slate-800">
@@ -251,14 +256,14 @@ export default function Analytics() {
               {loading ? "Memproses…" : "Run forecast"}
             </button>
 
-            {forecast?.best_metrics && (
+            {bestMetrics != null ? (
               <div className="mt-6 space-y-2">
                 <p className="text-sm text-slate-300">
                   Model terbaik:{" "}
-                  <span className="text-teal-400 font-mono">{String(forecast.best_model)}</span>
+                  <span className="text-teal-400 font-mono">{String(forecast?.best_model ?? "")}</span>
                 </p>
                 <div className="grid grid-cols-2 gap-2 text-sm">
-                  {Object.entries(forecast.best_metrics as object).map(([k, v]) => (
+                  {Object.entries(bestMetrics).map(([k, v]) => (
                     <div
                       key={k}
                       className="flex justify-between border border-slate-800 rounded-lg px-3 py-2"
@@ -269,24 +274,26 @@ export default function Analytics() {
                   ))}
                 </div>
               </div>
-            )}
+            ) : null}
           </div>
 
           <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6">
             <h3 className="text-white font-bold mb-4">Grafik — periode uji</h3>
-            {forecast && bestPred && Array.isArray(forecast.actual_test) && (
+            {forecast != null &&
+            bestPred != null &&
+            Array.isArray(forecast.actual_test) ? (
               <ForecastChart
                 testDates={forecast.test_dates as string[]}
                 actual={forecast.actual_test as number[]}
                 predicted={bestPred}
               />
-            )}
+            ) : null}
             {!forecast && (
               <p className="text-slate-500 text-sm">Jalankan forecast untuk melihat grafik.</p>
             )}
           </div>
 
-          {comparison && comparison.length > 0 && (
+          {comparison != null && comparison.length > 0 ? (
             <div className="lg:col-span-2 bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
               <div className="p-4 border-b border-slate-800">
                 <h3 className="text-white font-bold">Ranking model (MAE)</h3>
@@ -316,7 +323,7 @@ export default function Analytics() {
                 </table>
               </div>
             </div>
-          )}
+          ) : null}
         </div>
       )}
 
@@ -414,7 +421,7 @@ export default function Analytics() {
             <p className="p-8 text-slate-500 text-sm">Jalankan optimasi dari tab Parameter.</p>
           )}
 
-          {optimize && (
+          {optimize != null ? (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm text-slate-300">
                 <thead className="bg-slate-950 text-slate-400 border-b border-slate-800">
@@ -428,7 +435,7 @@ export default function Analytics() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60">
-                  {base && (
+                  {base != null ? (
                     <tr className="hover:bg-slate-800/40">
                       <td className="px-6 py-4 font-semibold text-slate-400">Baseline</td>
                       <td className="px-6 py-4">{String(clf?.vf_init ?? "—")}</td>
@@ -443,8 +450,8 @@ export default function Analytics() {
                         {base.tor}/{base.toy}/{base.tog}
                       </td>
                     </tr>
-                  )}
-                  {opt && (
+                  ) : null}
+                  {opt != null ? (
                     <tr className="hover:bg-slate-800/40 bg-indigo-950/20">
                       <td className="px-6 py-4 font-semibold text-indigo-300">GA optimal</td>
                       <td className="px-6 py-4 text-amber-300 font-bold">{opt.fv_opt}</td>
@@ -461,11 +468,11 @@ export default function Analytics() {
                         {opt.kpi?.tor}/{opt.kpi?.toy}/{opt.kpi?.tog}
                       </td>
                     </tr>
-                  )}
+                  ) : null}
                 </tbody>
               </table>
             </div>
-          )}
+          ) : null}
         </div>
       )}
 
