@@ -1,0 +1,323 @@
+Blueprint
+Dashboard
+- Beranda
+- KPI Dashboard
+
+Master Data
+- Master SKU
+- Upload Data and validation 
+  - demand
+  - stock, dll
+Note:  data harian di input dengan upload excel, perlu validasi data yang bisa digunakan untuk membuat perubahan data
+Note2: please check resources_ext/DDMRP_Hybrid_Algorithm.ipynb to get all data and related fields.
+
+Analytics&Replenishment ( based on resources_ext/DDMRP_Hybrid_Algorithm.ipynb)
+- Forecasting
+- Parameter DDMRP
+- Optimasi Buffer
+- Rekomendasi Buffer 
+- Buffer Aktif
+Replenishment
+- Rekomendasi Repelenishment
+- Detail SKU
+
+Monitoring
+- Alert Stok
+- Audit Log ( show log from scheduler )
+Settings
+- Konfigurasi Sistem ( to setup scheduler forecast ( daily / weekly / by period ))
+
+Dashboard
+
+Beranda
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Dashboard Distributor DDMRP                              Periode [Mar 2026] │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [Total SKU] [Zona Merah] [Perlu Replenishment] [Open Order] [Buffer Active] │
+│    250          18              22                 15          v2026.03      │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Distribusi Status Buffer                  │
+│ Red: 18 | Yellow: 74 | Green: 158        │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Ringkasan Kontrol Harian         │ Ringkasan Buffer Periodik                 │
+│ Order hari ini: 15 SKU           │ Buffer aktif sejak: 01-03-2026           │
+│ Receipt hari ini: 6 SKU          │ Review berikutnya: 01-04-2026            │
+│ Stockout risk: 12 SKU            │ Avg Fill Rate Est.: 96.1%                │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Top SKU Kritis                                                           │
+│ A001 - Produk A   | NFE 15 | TOY 80 | TOG 115 | Action: Order 100         │
+│ A008 - Produk B   | NFE 22 | TOY 55 | TOG 80  | Action: Order 60          │
+│ A021 - Produk C   | NFE 10 | TOY 48 | TOG 70  | Action: Order 60          │
+
+KPI Dashboard
+┌────────────────────────────────────────────────────────────────────────────────┐
+│ KPI Dashboard                                                 Periode [Bulanan ▼] │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ [Fill Rate] [CSL] [Avg Inventory] [Holding Cost] [Stockout Cost] [Total Cost]    │
+│  96.1%       94.8%        2,850         25 jt            8 jt          74.5 jt    │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ Grafik Service Level vs Target            │                                           │                                         │
+├───────────────────────────────────────────────────────────────────────────────┤
+   Top Item Overstock                     
+│ A001                                      │ B004                                   │
+│ A008                                      │ D007                                   │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ Review Buffer                                                                    │
+│ Buffer aktif v2026.03 memberi estimasi fill rate 96.1% dengan total cost 74.5 jt │
+└────────────────────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+Data
+
+Master SKU
+┌────────────────────────────────────────────────────────────────────────────────┐
+│ Master SKU                                                        [+ Tambah SKU] │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ Search [____________]  Category [All ▼]  Status [Active ▼]                       │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ SKU  | Nama Item | Unit | Lead Time | MOQ | Pack | Harga | Target SL | Status    │
+│ A001 | Produk A  | pcs  | 3 hari    |100  | 10   | 9000  | 95%       | Active    │
+│ A002 | Produk B  | pcs  | 5 hari    | 50  |  5   | 7000  | 95%       | Active    │
+│ A003 | Produk C  | pcs  | 4 hari    | 20  |  1   | 6000  | 95%       | Active    │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ [Import Excel] [Export] [Edit] [Deactivate]                                      │
+└────────────────────────────────────────────────────────────────────────────────┘
+
+Upload Data
+┌────────────────────────────────────────────────────────────────────────────────┐
+│ Upload Data                                                                       │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ Tab: [Demand] [Stock] [Open Order] [Receipt] [Defect/Return]                     │
+├───────────────────────────────────────────────────────────────────────────────┤
+│ Jenis Data: [Demand ▼]         [Download Template]                                │
+│ File: [Choose File.................................................] [Upload]     │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ Preview Data                                                                       │
+│ Date       | SKU  | Value                                                         │
+│ 2026-03-01 | A001 | 25                                                            │
+│ 2026-03-02 | A001 | 20                                                            │
+│ 2026-03-03 | A002 | 18                                                            │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ Hasil Validasi Sementara                                                          │
+│ Total 300 baris | Valid 290 | Error 10                                            │
+├───────────────────────────────────────────────────────────────────────────────┤
+│ [Simpan Data Valid] [Download Error Log] [Batal]                                  │
+└───────────────────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Analitics dan Replenishment
+
+Forecasting
+┌────────────────────────────────────────────────────────────────────────────────┐
+│ Forecasting Demand Distributor                                                    │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ SKU [A001 ▼]   Horizon [LT ▼]   Run Forecast]             │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ KPI Forecast: MAE 4.5 | RMSE 6.8 | MAPE 12.4%                                     │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ Grafik Demand Historis vs Forecast                                                │
+│                                                                                    │
+│ actual ──────────                                                                  │
+│ forecast - - - - -                                                                 │
+│                                                                                    │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ [Export Forecast]                                                                  │
+└────────────────────────────────────────────────────────────────────────────────┘
+
+Parameter DDMRP
+
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Parameter DDMRP                                              Mode: Periodik │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ SKU [A001 ▼]                                                                │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ ADU				:
+  DLT                         : 
+│ MOQ                         : 
+│ OH				:
+│ Service Level Target        : 
+│ Holding Cost / unit / day   : 
+│ Order Cost / order          : 
+│ Lostsale cost	        :
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Rentang Optimasi                                                          │
+│ FV min - max                : [0.00 - 1.00]                                 │
+│ LTF min - max               : [0.00 - 1.00]                                 │
+  Objective                   : [Min Cost with SL ≥ 95% ▼]                    │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [Save Parameter] [Run Optimization]                                          │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Optimasi Buffer
+┌────────────────────────────────────────────────────────────────────────────────┐
+│ Optimasi Buffer DDMRP                                            Frekuensi: Periodik │
+├───────────────────────────────────────────────────────────────────────────────┤
+│ Periode Histori Data   : [01-12-2025 s/d 29-02-2026]                              │
+│ Periode Berlaku Buffer : [01-03-2026 s/d 31-03-2026]                              │
+│ Scope SKU              : [All Active ▼]                                           │
+│ Objective              : [Min Total Cost + SL Target ▼]                           │
+├───────────────────────────────────────────────────────────────────────────────┤
+│ Variabel Optimasi                                                                  │
+│ [✓] FV    [✓] LTF    [ ] DLT (fixed)                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Constraint                                                                         │
+│ Fill Rate minimum : [95%]                                                         │
+│ MOQ aktif         : [Yes]                                                         │
+│ Pack size aktif   : [Yes]                                                         │
+├───────────────────────────────────────────────────────────────────────────────┤
+│ [Run Buffer Optimization]                                                         │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Output Ringkas                                                                     │
+│ SKU berhasil dioptimasi:                                                       │
+│ Avg Fill Rate Est. :                                                         │
+│ Est. Total Cost    :                                              │
+│ Draft version      : v2026.03-draft                                               │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+
+Hasil Optimasi Buffer
+┌───────────────────────────────────────────────────────────────────────────────┐
+│ Hasil Optimasi Buffer                                         Version: v2026.03   │
+├───────────────────────────────────────────────────────────────────────────────┤
+│ Status: Draft                                                                       │
+├───────────────────────────────────────────────────────────────────────────────┤
+│ SKU  | ADU | DLT | FV Opt | LTF Opt | TOR | TOY | TOG | Score │
+│ A001 | 26  |  3  | 1.20   | 0.80    |   50| 80  |115  | Best  │
+│ A002 | 18  |  4  | 1.10   | 0.75    |   35| 60  | 90  | Best  │
+│ A003 | 10  |  5  | 1.35   | 0.90    |   68| 88  |108  | Best  │
+│ A008 | 16  |  3  | 1.25   | 0.85    |   37| 55  | 80  | Best  │
+├───────────────────────────────────────────────────────────────────────────────┤
+│ Ringkasan                                                                         │
+│ Avg TOY: 72    Avg TOG: 101    Est. CSL: 94.8%                                    │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ [Export Result] [Review Detail] [Set as Active Buffer]                            │
+└────────────────────────────────────────────────────────────────────────────────┘
+Buffer Aktif
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Buffer Aktif                                                                │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Version Aktif         : v2026.03                                            │
+│ Berlaku Mulai         : 01-03-2026                                          │
+│ Berlaku Sampai        : 31-03-2026                                          │
+│ Sumber                : Optimasi buffer periode Feb 2026                    │
+│ Status                : Active                                              │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Riwayat Buffer                                                              │
+│ Version     | Periode Berlaku         | Status    | Dibuat Oleh             │
+│ v2026.01    | 01-01 s/d 31-01-2026    | Archived  | Planner                 │
+│ v2026.02    | 01-02 s/d 28-02-2026    | Archived  | Planner                 │
+│ v2026.03    | 01-03 s/d 31-03-2026    | Active    | Planner                 │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [Lihat Detail Buffer] [Bandingkan Versi] [Aktifkan Versi Baru]              │
+└──────────────────────────────────────────────────────────────────────────────┘
+Replenishment Rekomendasi
+┌───────────────────────────────────────────────────────────────────────────────┐
+│ Rekomendasi Replenishment                                     Buffer: v2026.03    │
+├───────────────────────────────────────────────────────────────────────────────┤
+│ Filter: Status [All ▼]   Search SKU [__________]   Category [All ▼]               │
+├───────────────────────────────────────────────────────────────────────────────┤
+│ SKU  | Stock | Open Ord | NFE | TOY | TOG | OH       | MOQ | Final Qty | Status  │
+│ A001 |  20   |   10     | 15  | 80  |115  |   100    |100  |   100     | Order   │
+│ A002 |  55   |    0     | 45  | 60  | 90  |    45    | 50  |    50     | Order   │
+│ A003 | 120   |   40     |130  | 88  |108  |     0    | 20  |     0     | Aman    │
+│ A008 |  18   |    0     |  6  | 55  | 80  |    74    | 20  |    80     | Order   │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ Penjelasan                                                                         │
+│ A001: NFE 15 < TOY 80, maka replenishment dipicu.                                 │
+│ Qty awal = TOG - NFE = 100, lalu disesuaikan dengan MOQ/pack size.                │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ [Approve] [Override Qty] [Export Excel]                                            │
+└────────────────────────────────────────────────────────────────────────────────┘
+Detail SKU
+┌────────────────────────────────────────────────────────────────────────────────┐
+│ Detail SKU: A001 - Produk A                                                       │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ Informasi Harian                                                                   │
+│ Stock Saat Ini   : 20        Available Stock : 15                                  │
+│ Open Order       : 10        Qualified Demand: 15                                  │
+│ NFE Hari Ini     : 15        Status Buffer  : Red                                  │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ Buffer Aktif                                                                       │
+│ Version : v2026.03   ADU : 26   DLT : 3 hari   FV : 1.20   LTF : 0.80            │
+│ TOY     : 80         TOG : 115                                                   │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ Rekomendasi Hari Ini                                                               │
+│ Qty Replenishment : 100                                                            │
+│ Order Date        : 29-03-2026                                                     │
+│ ETA               : 01-04-2026                                                     │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ Grafik Histori Demand                │ Grafik Proyeksi Stock                      │
+Alert Stock
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ Alert Stok                                                                  │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Tanggal    | Level    | SKU  | Jenis Alert        | Keterangan             │
+│ 29-03-2026 | Critical | A001 | Stockout Risk      | Habis sebelum receipt  │
+│ 29-03-2026 | Warning  | A008 | Red Zone           | NFE jauh di bawah TOY  │
+│ 29-03-2026 | Warning  | B014 | Open Order Delay   | ETA mundur 1 hari      │
+│ 29-03-2026 | Info     | C002 | Demand Spike       | Di atas ADU            │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ [Mark Reviewed] [Export]                                                    │
+└──────────────────────────────────────────────────────────────────────────────┘
+
+Alert Log
+┌──────────────────────────────────────────────────────────────────────────┐
+│ Audit Log                                                                          │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ Filter: User [All ▼]  Modul [All ▼]  Tanggal [....]                               │
+├────────────────────────────────────────────────────────────────────────────────┤
+│ Tanggal    | User    | Modul                    | Aktivitas                        │
+│ 29-03-2026 | Admin   | Master SKU               | Edit lead time A001 2→3         │
+│ 29-03-2026 | Planner | Rekomendasi Replenishment| Override qty A001 100→90        │
+│ 29-03-2026 | Planner | Upload Data              | Upload demand harian            │
+│ 01-03-2026 | Planner | Buffer Aktif             | Aktivasi v2026.03               │
+└────────────────────────────────────────────────────────────────────────────────┘
+
+
+Open Questions
+Database Schema: We will need to set up SQLAlchemy models for all of these tables inside the ddmrp-db PostgreSQL container. Shall I design those schema models first as Part 1 of the execution?
+answer : yes please, please check resources_ext/DDMRP_Hybrid_Algorithm.ipynb for related data and fields
+Third-party libraries: For forecasting and optimization, does DDMRP_Hybrid_Algorithm.ipynb use libraries like scikit-learn or scipy that need to be added to backend/requirements.txt?
+answer: yes, it should run in python under docker
+Data Mocking: Should we write scripts to populate mock data for the dashboard elements during initial development to ensure the UI looks exactly like the Blueprint?
+answer : no need data mocking, but please follow steps for data flow in resources_ext/DDMRP_Hybrid_Algorithm.ipynb
