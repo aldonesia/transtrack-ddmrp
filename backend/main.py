@@ -1,3 +1,5 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
@@ -16,10 +18,12 @@ app = FastAPI(title="DDMRP API")
 app.include_router(analytics_router)
 app.include_router(master_router)
 
-# Configure CORS for local development with Next.js
+_cors = os.getenv("CORS_ORIGINS", "http://localhost:3001")
+_allow_origins = [o.strip() for o in _cors.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3001"],
+    allow_origins=_allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

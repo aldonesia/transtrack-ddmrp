@@ -22,6 +22,7 @@ services:
       - "8000:8000"
     environment:
       - DATABASE_URL=postgresql://ddmrp_user:ddmrp_password@db/ddmrp_db
+      - CORS_ORIGINS=http://localhost:3001,https://transtrack-ddmrp.skom.my.id
     depends_on:
       - db
     volumes:
@@ -40,9 +41,6 @@ services:
       - NEXT_PUBLIC_API_URL=http://localhost:8000
     depends_on:
       - backend
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
 
 volumes:
   postgres_data:
