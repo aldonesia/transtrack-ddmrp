@@ -31,12 +31,14 @@ def run_buffer_optimization(
     pop_size: int = 24,
     n_gen: int = 40,
     include_baseline: bool = True,
+    forecast_result: Optional[Dict[str, Any]] = None,
+    return_detail: bool = False,
 ) -> Dict[str, Any]:
     sku_s = _norm_sku(sku)
     df_raw = get_sku_demand(data, sku_s, verbose=False)
     params = get_sku_params(data, sku_s)
 
-    result_fc = run_forecast(df_raw, sku_s, verbose=False)
+    result_fc = forecast_result or run_forecast(df_raw, sku_s, verbose=False)
     clean = result_fc["series_clean"]
 
     df_clf = df_raw.copy()
@@ -68,8 +70,8 @@ def run_buffer_optimization(
 
     kpi_base = None
     if include_baseline:
-        kpi_base = sim_fn(clf["vf_init"], clf["ltf_init"])
-        kpi_base = _strip_detail(kpi_base)
+        kpi_base_raw = sim_fn(clf["vf_init"], clf["ltf_init"])
+        kpi_base = _strip_detail(kpi_base_raw)
 
     ga = GeneticOptimizer(
         (clf["vf_low"], clf["vf_high"]),
@@ -80,7 +82,9 @@ def run_buffer_optimization(
         verbose=False,
     )
     gr = ga.run(sim_fn, clf["vf_init"], clf["ltf_init"])
-    kpi_opt = _strip_detail(gr["kpi"])
+    kpi_opt_raw = gr["kpi"]
+    optimized_detail = kpi_opt_raw.get("df_detail") if return_detail else None
+    kpi_opt = _strip_detail(kpi_opt_raw)
 
     hist = gr["history"]
     hist_records = hist.to_dict("records") if isinstance(hist, pd.DataFrame) else []
@@ -97,6 +101,7 @@ def run_buffer_optimization(
             "kpi": kpi_opt,
         },
         "ga_history_tail": hist_records[-15:] if len(hist_records) > 15 else hist_records,
+        "optimized_detail": optimized_detail.to_dict("records") if return_detail and isinstance(optimized_detail, pd.DataFrame) else None,
     }
 
 

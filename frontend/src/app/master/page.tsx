@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
-  demandTemplateUrl,
+  masterSkuTemplateUrl,
   listMasterSkus,
   saveMasterSku,
-  uploadDemandExcel,
+  uploadMasterSkuExcel,
+  validateMasterSkuExcel,
   type MasterSku,
 } from "@/lib/api";
 
@@ -32,7 +33,9 @@ export default function MasterData() {
   const [form, setForm] = useState(emptyForm);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [uploadBusy, setUploadBusy] = useState(false);
+  const [uploadMasterBusy, setUploadMasterBusy] = useState(false);
+  const [masterFile, setMasterFile] = useState<File | null>(null);
+  const [masterValidation, setMasterValidation] = useState<Record<string, unknown> | null>(null);
 
   const reload = useCallback(() => {
     listMasterSkus()
@@ -69,19 +72,37 @@ export default function MasterData() {
     }
   };
 
-  const onUpload = async (file: File | null) => {
+  const onValidateMasterSku = async (file: File | null) => {
     if (!file) return;
-    setUploadBusy(true);
+    setMasterFile(file);
+    setUploadMasterBusy(true);
     setErr(null);
     setMsg(null);
     try {
-      const r = await uploadDemandExcel(file);
-      setMsg(`Upload demand: +${r.inserted} baru, ${r.updated} diperbarui (${r.rows_in_file} baris).`);
+      const r = await validateMasterSkuExcel(file);
+      setMasterValidation(r);
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUploadMasterBusy(false);
+    }
+  };
+
+  const onCommitMasterSku = async () => {
+    if (!masterFile) return;
+    setUploadMasterBusy(true);
+    setErr(null);
+    setMsg(null);
+    try {
+      const r = await uploadMasterSkuExcel(masterFile);
+      setMsg(`Upload master SKU: +${r.inserted} baru, ${r.updated} diperbarui (${r.rows_in_file} baris).`);
+      setMasterValidation(null);
+      setMasterFile(null);
       reload();
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setUploadBusy(false);
+      setUploadMasterBusy(false);
     }
   };
 
@@ -90,10 +111,10 @@ export default function MasterData() {
       <div className="flex items-center justify-between pb-4 border-b border-slate-800">
         <div>
           <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-br from-white to-slate-400 bg-clip-text text-transparent">
-            Master Data & Upload
+            Master SKU
           </h1>
           <p className="text-sm text-slate-400 mt-1">
-            Master SKU dan unggah demand harian · data tersimpan ke database untuk analytics
+            Kelola Master SKU untuk kebutuhan forecasting & optimasi DDMRP (data tersimpan ke database).
           </p>
         </div>
       </div>
@@ -130,7 +151,7 @@ export default function MasterData() {
               : "text-slate-400 hover:text-white hover:bg-slate-800"
           }`}
         >
-          Upload demand
+          Upload Master SKU
         </button>
       </div>
 
@@ -226,32 +247,73 @@ export default function MasterData() {
       )}
 
       {activeTab === "upload" && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-8 max-w-3xl mx-auto mt-6 relative overflow-hidden group">
-          <div className="relative z-10">
-            <h2 className="text-2xl font-bold text-white mb-2">Unggah demand harian</h2>
-            <p className="text-slate-400 mb-6 text-sm">
-              Kolom: <strong className="text-slate-300">Date</strong>,{" "}
-              <strong className="text-slate-300">SKU</strong>,{" "}
-              <strong className="text-slate-300">Demand</strong>, opsional{" "}
-              <strong className="text-slate-300">Promo_Discount</strong>. SKU harus sudah ada di
-              master.
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-5xl mx-auto mt-6">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6">
+            <h2 className="text-xl font-bold text-white mb-2">Validasi & preview</h2>
+            <p className="text-slate-400 mb-4 text-sm">
+              Wajib kolom: Material Number, Material Group, Lead Time_Days, Sales Price, Purchase
+              Price, Holding Cost Rate/day, Lost Sale Rate/Each, Logistic Cost/Order, MOQ.
             </p>
             <a
-              href={demandTemplateUrl()}
-              className="text-sm text-indigo-400 hover:text-indigo-300 block mb-6"
+              href={masterSkuTemplateUrl()}
+              className="text-sm text-indigo-400 hover:text-indigo-300 block mb-4"
             >
-              ↓ Unduh template Excel
+              ↓ Unduh template Master SKU
             </a>
             <label className="inline-block bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3 px-6 rounded-lg cursor-pointer shadow-lg">
-              {uploadBusy ? "Mengunggah…" : "Pilih file Excel"}
+              {uploadMasterBusy ? "Mengunggah…" : "Pilih file Master SKU"}
               <input
                 type="file"
                 className="hidden"
                 accept=".xlsx,.xls"
-                disabled={uploadBusy}
-                onChange={(e) => onUpload(e.target.files?.[0] ?? null)}
+                disabled={uploadMasterBusy}
+                onChange={(e) => onValidateMasterSku(e.target.files?.[0] ?? null)}
               />
             </label>
+            {masterValidation && (
+              <div className="mt-4 text-sm text-slate-300 space-y-2">
+                <p>
+                  Validasi: total {String(masterValidation.total_rows ?? 0)} | valid{" "}
+                  {String(masterValidation.valid_rows ?? 0)} | error{" "}
+                  {String(masterValidation.error_rows ?? 0)}
+                </p>
+                <button
+                  type="button"
+                  disabled={uploadMasterBusy || Number(masterValidation.valid_rows ?? 0) <= 0}
+                  onClick={onCommitMasterSku}
+                  className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold py-2 px-4 rounded-lg"
+                >
+                  Simpan Data Valid
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6">
+            <h2 className="text-xl font-bold text-white mb-2">Error preview</h2>
+            {!masterValidation && <p className="text-slate-500 text-sm">Belum ada validasi.</p>}
+            {masterValidation && (
+              <div className="text-slate-300 text-sm space-y-2">
+                {Array.isArray(masterValidation.errors) &&
+                masterValidation.errors.length > 0 ? (
+                  <div className="space-y-2">
+                    {(masterValidation.errors as any[]).slice(0, 20).map((e, idx) => (
+                      <div
+                        key={idx}
+                        className="border border-slate-800 rounded-lg px-3 py-2 bg-slate-950/30"
+                      >
+                        <div className="font-mono text-slate-400">
+                          row {String(e.row ?? "?")}
+                        </div>
+                        <div className="text-red-300">{String(e.message ?? "")}</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-emerald-300">Tidak ada error.</p>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

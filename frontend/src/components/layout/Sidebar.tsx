@@ -9,6 +9,7 @@ export default function Sidebar() {
   const navigation = [
     { name: "Beranda & KPI", href: "/" },
     { name: "Master Data", href: "/master" },
+    { name: "Master Demand", href: "/master/demand" },
     { name: "Analytics & Buffer", href: "/analytics" },
     { name: "Replenishment", href: "/replenishment" }
   ];

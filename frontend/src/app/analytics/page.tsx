@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   getDatasetStatus,
   listSkus,
-  runForecast,
+  runForecastAndOptimize,
   runOptimize,
   type DatasetStatus,
   type SkuRow,
@@ -119,8 +119,15 @@ export default function Analytics() {
     setLoading(true);
     setError(null);
     try {
-      const data = await runForecast(selectedSku);
-      setForecast(data);
+      const data = await runForecastAndOptimize(selectedSku, {
+        sl_target: slTarget,
+        pop_size: popSize,
+        n_gen: nGen,
+        include_baseline: true,
+      });
+      setForecast(data.forecast);
+      setOptimize(data.optimize);
+      setActiveTab("optimasi");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -133,12 +140,14 @@ export default function Analytics() {
     setLoading(true);
     setError(null);
     try {
-      const data = await runOptimize(selectedSku, {
+      const data = await runForecastAndOptimize(selectedSku, {
         sl_target: slTarget,
         pop_size: popSize,
         n_gen: nGen,
+        include_baseline: true,
       });
-      setOptimize(data);
+      setForecast(data.forecast);
+      setOptimize(data.optimize);
       setActiveTab("optimasi");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));

@@ -67,3 +67,20 @@ class DailyRecord(Base):
     order_cost = Column(Float, default=0)
     penalty_cost = Column(Float, default=0)
     total_cost = Column(Float, default=0)
+
+
+class DDMRPBufferDetail(Base):
+    __tablename__ = "ddmrp_buffer_detail"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "buffer_id", "date", name="uq_ddmrp_buffer_detail_buffer_id_date"
+        ),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    buffer_id = Column(Integer, ForeignKey("ddmrp_buffer.id"), index=True)
+    date = Column(Date, index=True)
+    order_qty = Column(Float, default=0)
+    nfe = Column(Float, default=0)
+    zone = Column(String, nullable=True)  # Red, Yellow, Green

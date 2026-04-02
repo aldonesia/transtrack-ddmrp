@@ -1,4 +1,6 @@
 /** Production API — never use localhost from an HTTPS public page (browser blocks private-network access). */
+declare const process: { env: { NEXT_PUBLIC_API_URL?: string } };
+
 const PRODUCTION_API = "https://transtrack-ddmrp-api.skom.my.id";
 const LOCAL_DEV_API = "http://localhost:8000";
 
@@ -97,6 +99,38 @@ export function demandTemplateUrl(): string {
   return `${getApiBase()}/api/master/template/demand`;
 }
 
+export function masterSkuTemplateUrl(): string {
+  return `${getApiBase()}/api/master/template/master-sku`;
+}
+
+export async function uploadMasterSkuExcel(file: File) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const r = await fetch(`${getApiBase()}/api/master/upload/master-sku`, {
+    method: "POST",
+    body: fd,
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json();
+}
+
+export async function validateMasterSkuExcel(file: File) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const r = await fetch(`${getApiBase()}/api/master/validate/master-sku`, {
+    method: "POST",
+    body: fd,
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json();
+}
+
 export async function uploadDemandExcel(file: File) {
   const fd = new FormData();
   fd.append("file", file);
@@ -111,6 +145,43 @@ export async function uploadDemandExcel(file: File) {
   return r.json();
 }
 
+export async function validateDemandExcel(file: File) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const r = await fetch(`${getApiBase()}/api/master/validate/demand`, {
+    method: "POST",
+    body: fd,
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json();
+}
+
+export type DemandRow = {
+  id: number;
+  date: string | null;
+  sku: string;
+  nama_item?: string | null;
+  group?: string | null;
+  demand: number;
+  promo_discount: number;
+};
+
+export async function listDemandRows(opts: { limit?: number; sku?: string } = {}) {
+  const limit = opts.limit ?? 100;
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  if (opts.sku) params.set("sku", opts.sku);
+  const r = await fetch(`${getApiBase()}/api/master/demand?${params.toString()}`);
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json() as Promise<{ rows: DemandRow[] }>;
+}
+
 export async function runForecast(sku: string | number) {
   const r = await fetch(`${getApiBase()}/api/analytics/forecast`, {
     method: "POST",
@@ -122,6 +193,34 @@ export async function runForecast(sku: string | number) {
     throw new Error((j as { detail?: string }).detail ?? r.statusText);
   }
   return r.json();
+}
+
+export type ForecastAndOptimizeResponse = {
+  buffer_id: number;
+  forecast: Record<string, unknown>;
+  optimize: Record<string, unknown>;
+};
+
+export async function runForecastAndOptimize(
+  sku: string | number,
+  opts: { sl_target?: number; pop_size?: number; n_gen?: number; include_baseline?: boolean } = {}
+): Promise<ForecastAndOptimizeResponse> {
+  const r = await fetch(`${getApiBase()}/api/analytics/run`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      sku: String(sku),
+      sl_target: opts.sl_target ?? 0.95,
+      pop_size: opts.pop_size ?? 24,
+      n_gen: opts.n_gen ?? 40,
+      include_baseline: opts.include_baseline ?? true,
+    }),
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json() as Promise<ForecastAndOptimizeResponse>;
 }
 
 export async function runOptimize(
@@ -144,4 +243,28 @@ export async function runOptimize(
     throw new Error((j as { detail?: string }).detail ?? r.statusText);
   }
   return r.json();
+}
+
+export type ReplenishmentRecommendation = {
+  date: string | null;
+  order_qty: number;
+  nfe: number;
+  zone?: string | null;
+};
+
+export async function getReplenishmentPlan(sku: string | number) {
+  const r = await fetch(
+    `${getApiBase()}/api/analytics/replenishment?sku=${encodeURIComponent(String(sku))}`,
+  );
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return (await r.json()) as {
+    sku: string;
+    buffer_id: number;
+    today_date: string | null;
+    leadtime_days: number;
+    recommendations: ReplenishmentRecommendation[];
+  };
 }
