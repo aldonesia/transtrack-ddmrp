@@ -530,6 +530,80 @@ def get_replenishment(
     }
 
 
+@router.get("/buffer-active")
+def get_buffer_active(
+    sku: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Detail buffer aktif untuk SKU terpilih, termasuk ringkasan order window.
+    """
+    if not sku:
+        raise HTTPException(status_code=400, detail="Missing `sku` query param.")
+    sku_s = str(sku).strip()
+
+    buf = (
+        db.query(DDMRPBuffer)
+        .filter(DDMRPBuffer.sku == sku_s, DDMRPBuffer.status == "Active")
+        .order_by(DDMRPBuffer.id.desc())
+        .first()
+    )
+    if not buf:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No active buffer found for SKU {sku_s}. Run forecast/optimization first.",
+        )
+
+    rows = (
+        db.query(DDMRPBufferDetail)
+        .filter(DDMRPBufferDetail.buffer_id == buf.id)
+        .order_by(DDMRPBufferDetail.date.asc())
+        .all()
+    )
+    recommendations = [
+        {
+            "date": r.date.isoformat() if r.date else None,
+            "order_qty": float(r.order_qty or 0),
+            "nfe": float(r.nfe or 0),
+            "zone": r.zone,
+        }
+        for r in rows
+    ]
+    n_order_days = sum(1 for r in recommendations if float(r["order_qty"]) > 0)
+    total_order_qty = float(sum(float(r["order_qty"]) for r in recommendations))
+    min_nfe = float(min((float(r["nfe"]) for r in recommendations), default=0.0))
+    max_nfe = float(max((float(r["nfe"]) for r in recommendations), default=0.0))
+
+    sm = db.query(SKUMaster).filter(SKUMaster.sku == sku_s).first()
+    qty_per_carton = int(sm.pack_size or 1) if sm is not None else 1
+
+    return {
+        "sku": sku_s,
+        "unit": "CTN",
+        "qty_per_carton": qty_per_carton,
+        "buffer_id": int(buf.id),
+        "version": buf.version,
+        "status": buf.status,
+        "start_date": buf.start_date.isoformat() if buf.start_date else None,
+        "end_date": buf.end_date.isoformat() if buf.end_date else None,
+        "dlt": int(buf.dlt or 0),
+        "adu": float(buf.adu or 0),
+        "vf_opt": float(buf.vf_opt or 0),
+        "ltf_opt": float(buf.ltf_opt or 0),
+        "tor": float(buf.tor or 0),
+        "toy": float(buf.toy or 0),
+        "tog": float(buf.tog or 0),
+        "summary": {
+            "n_days": len(recommendations),
+            "n_order_days": n_order_days,
+            "total_order_qty": round(total_order_qty, 2),
+            "min_nfe": round(min_nfe, 2),
+            "max_nfe": round(max_nfe, 2),
+        },
+        "recommendations": recommendations,
+    }
+
+
 @router.get("/integration/replenishment")
 def integration_replenishment(
     sku_no: Optional[str] = None,

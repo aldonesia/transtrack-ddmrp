@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
+  getActiveBufferDetail,
   getDatasetStatus,
   getLatestRun,
   getParitySnapshot,
@@ -160,6 +161,8 @@ export default function Analytics() {
   const [nGen, setNGen] = useState(40);
   const [latestRunAt, setLatestRunAt] = useState<string | null>(null);
   const [parityMsg, setParityMsg] = useState<string | null>(null);
+  const [activeBuffer, setActiveBuffer] = useState<Awaited<ReturnType<typeof getActiveBufferDetail>> | null>(null);
+  const [showAllBufferRows, setShowAllBufferRows] = useState(false);
 
   useEffect(() => {
     getDatasetStatus()
@@ -204,6 +207,17 @@ export default function Analytics() {
       .catch(() => {
         setLatestRunAt(null);
       });
+  }, [selectedSku]);
+
+  useEffect(() => {
+    if (!selectedSku) return;
+    getActiveBufferDetail(selectedSku)
+      .then((d) => setActiveBuffer(d))
+      .catch(() => setActiveBuffer(null));
+  }, [selectedSku, optimize, forecast]);
+
+  useEffect(() => {
+    setShowAllBufferRows(false);
   }, [selectedSku]);
 
   const bestPred = useMemo(() => {
@@ -640,11 +654,104 @@ export default function Analytics() {
       )}
 
       {activeTab === "aktif" && (
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-slate-400 text-sm">
-          <p>
-            Buffer aktif (versi periode, aktivasi planner) belum terhubung ke database. Gunakan
-            hasil optimasi di tab sebelumnya sebagai draft.
-          </p>
+        <div className="space-y-4 mt-2">
+          {!activeBuffer ? (
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-slate-400 text-sm">
+              <p>Belum ada buffer aktif untuk SKU ini. Jalankan forecast + optimasi terlebih dahulu.</p>
+            </div>
+          ) : (
+            <>
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+                <h3 className="text-white font-bold mb-3">Informasi Buffer Aktif Terpilih</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                  <div className="border border-slate-800 rounded-lg px-3 py-2">
+                    <p className="text-slate-500">Buffer ID</p>
+                    <p className="text-white font-mono">{activeBuffer.buffer_id}</p>
+                  </div>
+                  <div className="border border-slate-800 rounded-lg px-3 py-2">
+                    <p className="text-slate-500">Version</p>
+                    <p className="text-white font-mono">{activeBuffer.version}</p>
+                  </div>
+                  <div className="border border-slate-800 rounded-lg px-3 py-2">
+                    <p className="text-slate-500">Status</p>
+                    <p className="text-emerald-300 font-mono">{activeBuffer.status}</p>
+                  </div>
+                  <div className="border border-slate-800 rounded-lg px-3 py-2">
+                    <p className="text-slate-500">Periode Aktif</p>
+                    <p className="text-white font-mono">
+                      {activeBuffer.start_date ?? "—"} s/d {activeBuffer.end_date ?? "—"}
+                    </p>
+                  </div>
+                  <div className="border border-slate-800 rounded-lg px-3 py-2">
+                    <p className="text-slate-500">DLT / ADU</p>
+                    <p className="text-white font-mono">
+                      {activeBuffer.dlt} hari / {activeBuffer.adu.toFixed(2)} {activeBuffer.unit}
+                    </p>
+                  </div>
+                  <div className="border border-slate-800 rounded-lg px-3 py-2">
+                    <p className="text-slate-500">Qty per Carton</p>
+                    <p className="text-white font-mono">{activeBuffer.qty_per_carton} pcs/ctn</p>
+                  </div>
+                  <div className="border border-slate-800 rounded-lg px-3 py-2">
+                    <p className="text-slate-500">VF / LTF</p>
+                    <p className="text-white font-mono">
+                      {activeBuffer.vf_opt.toFixed(4)} / {activeBuffer.ltf_opt.toFixed(4)}
+                    </p>
+                  </div>
+                  <div className="border border-slate-800 rounded-lg px-3 py-2">
+                    <p className="text-slate-500">TOR / TOY / TOG ({activeBuffer.unit})</p>
+                    <p className="text-white font-mono">
+                      {activeBuffer.tor.toFixed(2)} / {activeBuffer.toy.toFixed(2)} / {activeBuffer.tog.toFixed(2)}
+                    </p>
+                  </div>
+                  <div className="border border-slate-800 rounded-lg px-3 py-2">
+                    <p className="text-slate-500">Ringkasan Replenishment</p>
+                    <p className="text-white font-mono">
+                      order_days={activeBuffer.summary.n_order_days}, total_order={activeBuffer.summary.total_order_qty}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
+                <div className="p-4 border-b border-slate-800 flex items-center justify-between gap-3">
+                  <h3 className="text-white font-bold">Window Replenishment (Buffer Aktif)</h3>
+                  <button
+                    type="button"
+                    onClick={() => setShowAllBufferRows((v) => !v)}
+                    className="text-xs px-3 py-1.5 rounded-md border border-slate-700 text-slate-300 hover:bg-slate-800"
+                  >
+                    {showAllBufferRows ? "Ringkas 31 hari" : "Lihat semua hari"}
+                  </button>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm text-slate-300">
+                    <thead className="bg-slate-950 text-slate-400 border-b border-slate-800">
+                      <tr>
+                        <th className="px-4 py-3 font-medium">Tanggal</th>
+                        <th className="px-4 py-3 font-medium text-right">Order Qty ({activeBuffer.unit})</th>
+                        <th className="px-4 py-3 font-medium text-right">NFE ({activeBuffer.unit})</th>
+                        <th className="px-4 py-3 font-medium">Zona</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60">
+                      {(showAllBufferRows
+                        ? activeBuffer.recommendations
+                        : activeBuffer.recommendations.slice(0, 31)
+                      ).map((r, idx) => (
+                        <tr key={`${r.date ?? "x"}-${idx}`} className="hover:bg-slate-800/40">
+                          <td className="px-4 py-2">{r.date ?? "—"}</td>
+                          <td className="px-4 py-2 text-right text-emerald-300">{Number(r.order_qty).toFixed(2)}</td>
+                          <td className="px-4 py-2 text-right">{Number(r.nfe).toFixed(2)}</td>
+                          <td className="px-4 py-2">{r.zone ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

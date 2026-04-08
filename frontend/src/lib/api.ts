@@ -328,3 +328,43 @@ export async function getReplenishmentPlan(sku: string | number) {
     recommendations: ReplenishmentRecommendation[];
   };
 }
+
+export async function getActiveBufferDetail(sku: string | number) {
+  const r = await fetch(
+    `${getApiBase()}/api/analytics/buffer-active?sku=${encodeURIComponent(String(sku))}`,
+  );
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return (await r.json()) as {
+    sku: string;
+    unit: string;
+    qty_per_carton: number;
+    buffer_id: number;
+    version: string;
+    status: string;
+    start_date: string | null;
+    end_date: string | null;
+    dlt: number;
+    adu: number;
+    vf_opt: number;
+    ltf_opt: number;
+    tor: number;
+    toy: number;
+    tog: number;
+    summary: {
+      n_days: number;
+      n_order_days: number;
+      total_order_qty: number;
+      min_nfe: number;
+      max_nfe: number;
+    };
+    recommendations: Array<{
+      date: string | null;
+      order_qty: number;
+      nfe: number;
+      zone?: string | null;
+    }>;
+  };
+}

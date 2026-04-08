@@ -96,3 +96,16 @@ class ForecastRun(Base):
     qty_per_carton = Column(Integer, default=1)
     forecast_json = Column(Text)  # serialized JSON payload
     optimize_json = Column(Text)  # serialized JSON payload
+
+
+class NightlyJobRun(Base):
+    __tablename__ = "nightly_job_run"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    started_at = Column(DateTime, index=True)
+    finished_at = Column(DateTime, index=True, nullable=True)
+    status = Column(String, index=True)  # running | success | partial_success | failed
+    processed_skus = Column(Integer, default=0)
+    failed_skus = Column(Integer, default=0)
+    message = Column(String, nullable=True)
+    details_json = Column(Text, nullable=True)

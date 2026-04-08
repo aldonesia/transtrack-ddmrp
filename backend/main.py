@@ -2,12 +2,14 @@ import os
 import time
 import threading
 from datetime import datetime, timedelta
+import json
+from typing import Optional
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 from database import engine, get_db, SessionLocal
-from models import Base, DDMRPBuffer, DDMRPBufferDetail, SKUMaster
+from models import Base, DDMRPBuffer, DDMRPBufferDetail, SKUMaster, NightlyJobRun
 from sqlalchemy.orm import Session
 from fastapi import Depends
 from services.ddmrp_logic import optimize_buffer
@@ -57,12 +59,49 @@ _nightly_state = {
 }
 
 
+def _create_nightly_run_row(db: Session) -> NightlyJobRun:
+    row = NightlyJobRun(
+        started_at=datetime.now(),
+        status="running",
+        processed_skus=0,
+        failed_skus=0,
+        message="Nightly job started",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def _finish_nightly_run_row(
+    db: Session,
+    row_id: int,
+    *,
+    status: str,
+    processed_skus: int,
+    failed_skus: int,
+    message: str,
+    details: Optional[dict] = None,
+):
+    row = db.query(NightlyJobRun).filter(NightlyJobRun.id == row_id).first()
+    if row is None:
+        return
+    row.finished_at = datetime.now()
+    row.status = status
+    row.processed_skus = int(processed_skus)
+    row.failed_skus = int(failed_skus)
+    row.message = message
+    row.details_json = json.dumps(details or {})
+    db.commit()
+
+
 def _run_all_sku_refresh_job() -> dict:
     db = SessionLocal()
     processed = 0
     failed = 0
     failures: list[dict] = []
     started_at = datetime.now()
+    run_row = _create_nightly_run_row(db)
     try:
         sku_rows = (
             db.query(SKUMaster.sku)
@@ -91,10 +130,34 @@ def _run_all_sku_refresh_job() -> dict:
             "processed": processed,
             "failed": failed,
             "failures": failures[:20],
+            "run_id": int(run_row.id),
             "started_at": started_at.isoformat(),
             "finished_at": datetime.now().isoformat(),
         }
+    except Exception as e:
+        _finish_nightly_run_row(
+            db,
+            int(run_row.id),
+            status="failed",
+            processed_skus=processed,
+            failed_skus=max(failed, 1),
+            message=str(e),
+            details={"failures": failures[:20]},
+        )
+        raise
+    else:
+        pass
     finally:
+        if "status" in locals():
+            _finish_nightly_run_row(
+                db,
+                int(run_row.id),
+                status=status,
+                processed_skus=processed,
+                failed_skus=failed,
+                message=msg,
+                details={"failures": failures[:20]},
+            )
         db.close()
 
 
@@ -142,8 +205,22 @@ def read_root():
 
 @app.get("/api/analytics/nightly-status")
 def nightly_status():
+    db = SessionLocal()
+    latest = (
+        db.query(NightlyJobRun)
+        .order_by(NightlyJobRun.started_at.desc(), NightlyJobRun.id.desc())
+        .first()
+    )
+    db.close()
     return {
-        **_nightly_state,
+        "enabled": NIGHTLY_REFRESH_ENABLED,
+        "running": _nightly_state.get("running", False),
+        "last_run_at": latest.started_at.isoformat() if latest and latest.started_at else None,
+        "last_status": latest.status if latest else None,
+        "last_message": latest.message if latest else None,
+        "processed_skus": int(latest.processed_skus or 0) if latest else 0,
+        "failed_skus": int(latest.failed_skus or 0) if latest else 0,
+        "last_run_id": int(latest.id) if latest else None,
         "hour": NIGHTLY_REFRESH_HOUR,
         "minute": NIGHTLY_REFRESH_MINUTE,
         "params": NIGHTLY_RUN_PARAMS,
