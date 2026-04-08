@@ -75,10 +75,16 @@ def load_sales_master_frames_from_db(db: Session) -> Dict[str, pd.DataFrame]:
                     "Material Group",
                 ]
             ),
+            "carton_mapping": {},
         }
 
     master_df = pd.DataFrame([_master_row_dict(m) for m in masters])
     master_df["Material Number"] = master_df["Material Number"].astype(str)
+    carton_mapping = {
+        str(m.sku).strip(): int(m.pack_size or 1)
+        for m in masters
+        if int(m.pack_size or 0) > 0
+    }
 
     sku_set = {str(m.sku).strip() for m in masters}
 
@@ -113,4 +119,4 @@ def load_sales_master_frames_from_db(db: Session) -> Dict[str, pd.DataFrame]:
     if not sales_df.empty:
         sales_df["Date"] = pd.to_datetime(sales_df["Date"])
 
-    return {"sales": sales_df, "master": master_df}
+    return {"sales": sales_df, "master": master_df, "carton_mapping": carton_mapping}

@@ -43,6 +43,44 @@ def _build_carton_mapping(df_master: pd.DataFrame) -> Dict[str, int]:
     return out
 
 
+def _qty_per_carton_for_sku(data: Dict[str, pd.DataFrame], sku_val: str) -> int:
+    """
+    Resolve qty_per_carton with DB/master-first strategy.
+    Priority:
+    1) master row columns (Qty Per Carton / Pack Size aliases)
+    2) prebuilt carton_mapping dict
+    """
+    df_m = data.get("master")
+    candidate_cols = [
+        "Qty Per Carton",
+        "Qty_per_Carton",
+        "Qty per Carton",
+        "Pcs per CTN",
+        "Pcs/CTN",
+        "Each per Carton",
+        "Carton Size",
+        "Pack Size",
+        "pack_size",
+    ]
+    if isinstance(df_m, pd.DataFrame) and not df_m.empty and "Material Number" in df_m.columns:
+        m = df_m.copy()
+        m["Material Number"] = m["Material Number"].astype(str).str.strip()
+        row = m[m["Material Number"] == sku_val]
+        if not row.empty:
+            r = row.iloc[0]
+            for col in candidate_cols:
+                if col in m.columns:
+                    q = pd.to_numeric(r.get(col), errors="coerce")
+                    if pd.notna(q) and float(q) > 0:
+                        return int(q)
+
+    carton_mapping = data.get("carton_mapping", {})
+    q = carton_mapping.get(sku_val)
+    if q is not None and int(q) > 0:
+        return int(q)
+    raise ValueError(f"Qty Per Carton wajib diisi untuk SKU {sku_val}.")
+
+
 def _backend_root() -> str:
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -162,10 +200,7 @@ def get_sku_demand(
     d["PromoDiscountPct"] = d["PromoDiscountPct"].fillna(0.0)
     d["PromoType"] = d["PromoType"].fillna("NONE")
     d["Price"] = d["Price"].ffill()
-    carton_mapping = data.get("carton_mapping", {})
-    if sku_val not in carton_mapping:
-        raise ValueError(f"Qty Per Carton wajib diisi untuk SKU {sku}.")
-    qty_per_carton = int(carton_mapping[sku_val])
+    qty_per_carton = _qty_per_carton_for_sku(data, sku_val)
     if qty_per_carton <= 0:
         raise ValueError(f"Qty Per Carton tidak valid untuk SKU {sku}: {qty_per_carton}")
     d["Demand"] = d["Demand"].astype(float) / qty_per_carton
@@ -189,10 +224,7 @@ def get_sku_params(data: Dict[str, pd.DataFrame], sku: _SKU_KEY) -> Dict[str, An
     row = row.iloc[0]
 
     dlt = int(row["Lead Time_Days"])
-    carton_mapping = data.get("carton_mapping", {})
-    if sku_val not in carton_mapping:
-        raise ValueError(f"Qty Per Carton wajib diisi untuk SKU {sku}.")
-    qty_per_carton = int(carton_mapping[sku_val])
+    qty_per_carton = _qty_per_carton_for_sku(data, sku_val)
     if qty_per_carton <= 0:
         raise ValueError(f"Qty Per Carton tidak valid untuk SKU {sku}: {qty_per_carton}")
 
