@@ -22,9 +22,9 @@ function ForecastChart({
   actual: number[];
   predicted: number[];
 }) {
-  const w = 640;
-  const h = 220;
-  const pad = 36;
+  const w = 860;
+  const h = 360;
+  const pad = 56;
   const innerW = w - pad * 2;
   const innerH = h - pad * 2;
   const n = Math.max(actual.length, predicted.length, 1);
@@ -51,14 +51,91 @@ function ForecastChart({
     );
   };
 
+  const yTicks = 5;
+  const yTickValues = Array.from({ length: yTicks + 1 }, (_, i) => ymin + (span * i) / yTicks);
+  const xTickIdx = Array.from({ length: Math.min(n, 8) }, (_, i) =>
+    Math.round((i * (n - 1)) / Math.max(Math.min(n, 8) - 1, 1))
+  );
+  // Adaptive density: reduce value labels when points are many.
+  const labelEvery = n <= 30 ? 1 : n <= 70 ? 2 : n <= 120 ? 3 : 5;
+
+  const points = (vals: number[], color: string) =>
+    vals.map((v, i) => {
+      const px = x(i);
+      const py = y(v);
+      const showLabel = i % labelEvery === 0 || i === vals.length - 1;
+      return (
+        <g key={`${color}-${i}`}>
+          <circle cx={px} cy={py} r={2.6} fill={color}>
+            <title>{`${testDates[i] ?? `Titik ${i + 1}`}: ${v.toFixed(2)}`}</title>
+          </circle>
+          {showLabel ? (
+            <text
+              x={px + 3}
+              y={py - 5}
+              className="fill-slate-400 text-[9px]"
+            >
+              {v.toFixed(1)}
+            </text>
+          ) : null}
+        </g>
+      );
+    });
+
   return (
     <div className="overflow-x-auto">
       <svg width={w} height={h} className="text-slate-200">
         <rect x={0} y={0} width={w} height={h} fill="transparent" />
+        {/* Y grid + ticks */}
+        {yTickValues.map((yv, i) => (
+          <g key={`y-${i}`}>
+            <line
+              x1={pad}
+              y1={y(yv)}
+              x2={w - pad}
+              y2={y(yv)}
+              stroke="#334155"
+              strokeWidth={1}
+              strokeDasharray="3 4"
+            />
+            <text x={pad - 8} y={y(yv) + 3} textAnchor="end" className="fill-slate-500 text-[10px]">
+              {yv.toFixed(1)}
+            </text>
+          </g>
+        ))}
+        {/* X ticks */}
+        {xTickIdx.map((idx) => (
+          <g key={`x-${idx}`}>
+            <line x1={x(idx)} y1={h - pad} x2={x(idx)} y2={h - pad + 4} stroke="#64748b" strokeWidth={1} />
+            <text x={x(idx)} y={h - pad + 16} textAnchor="middle" className="fill-slate-500 text-[10px]">
+              {testDates[idx] ?? idx + 1}
+            </text>
+          </g>
+        ))}
+        {/* Axis lines */}
+        <line x1={pad} y1={pad} x2={pad} y2={h - pad} stroke="#94a3b8" strokeWidth={1.2} />
+        <line x1={pad} y1={h - pad} x2={w - pad} y2={h - pad} stroke="#94a3b8" strokeWidth={1.2} />
         {line(actual, "#38bdf8", false)}
         {line(predicted, "#a78bfa", true)}
+        {points(actual, "#38bdf8")}
+        {points(predicted, "#a78bfa")}
+        <text x={w / 2} y={h - 8} textAnchor="middle" className="fill-slate-400 text-[11px]">
+          X: Tanggal Periode Uji
+        </text>
+        <text
+          x={14}
+          y={h / 2}
+          transform={`rotate(-90 14 ${h / 2})`}
+          textAnchor="middle"
+          className="fill-slate-400 text-[11px]"
+        >
+          Y: Demand (CTN)
+        </text>
         <text x={pad} y={18} className="fill-slate-400 text-[10px]">
           Aktual (solid) vs prediksi terbaik (dash)
+        </text>
+        <text x={w - pad} y={18} textAnchor="end" className="fill-slate-500 text-[9px]">
+          Label titik adaptif: tiap {labelEvery} titik
         </text>
       </svg>
       <p className="text-[11px] text-slate-500 mt-1">
