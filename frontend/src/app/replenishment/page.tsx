@@ -136,6 +136,11 @@ export default function Replenishment() {
                 "Jalankan forecast di tab Analytics untuk menghasilkan buffer aktif."
               )}
             </p>
+            {plan ? (
+              <p className="text-[11px] text-slate-500 mt-1">
+                `Today (server)` adalah tanggal acuan plan buffer aktif (bukan jam lokal browser).
+              </p>
+            ) : null}
           </div>
           {plan ? (
             <div className="text-xs text-slate-500 font-mono">buffer_id={plan.buffer_id}</div>
