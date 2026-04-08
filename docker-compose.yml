@@ -8,6 +8,7 @@ services:
       POSTGRES_USER: ddmrp_user
       POSTGRES_PASSWORD: ddmrp_password
       POSTGRES_DB: ddmrp_db
+      TZ: Asia/Jakarta
     ports:
       - "5432:5432"
     volumes:
@@ -22,6 +23,7 @@ services:
       - "8000:8000"
     environment:
       - DATABASE_URL=postgresql://ddmrp_user:ddmrp_password@db/ddmrp_db
+      - TZ=Asia/Jakarta
       # Browser origin(s) allowed to call the API (not the API hostname)
       - CORS_ORIGINS=http://localhost:3001,https://transtrack-ddmrp.skom.my.id
       # Nightly refresh all SKU at 01:00
@@ -48,6 +50,7 @@ services:
       - "3001:3001"
     environment:
       - PORT=3001
+      - TZ=Asia/Jakarta
     depends_on:
       - backend
 
