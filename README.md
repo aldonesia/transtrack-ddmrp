@@ -215,6 +215,60 @@ Endpoint operasional:
 - `POST /api/analytics/nightly-run-now`
   - Trigger manual refresh semua SKU (untuk verifikasi/testing).
 
+## Dashboard (Ringkasan Operasional)
+
+Halaman dashboard menampilkan ringkasan data replenishment berbasis latest active buffer.
+
+### Sumber Data Dashboard
+
+- Endpoint utama: `GET /api/dashboard-summary`
+- Endpoint status scheduler: `GET /api/analytics/nightly-status`
+
+### Fitur Dashboard
+
+- Header:
+  - Judul dashboard operasional DDMRP.
+  - `Buffer Version` menampilkan versi buffer aktif terbaru.
+- Kartu KPI:
+  - `Total SKU`
+  - `Zona Merah`
+  - `Perlu Replenishment`
+  - `Open Order`
+  - `Buffer Active`
+
+Penjelasan KPI:
+
+- `Total SKU`: jumlah SKU yang saat ini memiliki buffer aktif.
+- `Zona Merah`: jumlah SKU dengan zona `RED` pada hari referensi buffer aktif.
+- `Perlu Replenishment`: jumlah SKU dengan `order_qty > 0` pada hari referensi.
+- `Open Order`: jumlah SKU yang memiliki minimal satu order (`order_qty > 0`) dalam window lead time buffer aktif.
+- `Buffer Active`: versi buffer aktif terbaru yang digunakan dashboard/replenishment.
+- Tabel `Top SKU Kritis`:
+  - Kolom: `SKU`, `NFE (CTN)`, `TOY (CTN)`, `TOG (CTN)`, `Action`
+  - `Action` menampilkan rekomendasi order dari kondisi hari ini.
+- Panel `Nightly Refresh (01:00)`:
+  - `Scheduler enabled`
+  - `Last status`
+  - `Processed SKU`
+  - `Last Run Time`
+
+### Catatan Unit pada Dashboard
+
+- Nilai replenishment ditampilkan dalam **CTN**.
+- Label unit pada tabel kritis ditulis eksplisit (`NFE/TOY/TOG (CTN)`).
+
+### Arti Status Nightly
+
+- `success`: semua SKU aktif berhasil diproses.
+- `partial_success`: sebagian SKU gagal diproses (lihat log backend).
+- `failed`: proses nightly gagal total.
+
+### Kondisi Data Kosong
+
+Jika belum ada buffer aktif, dashboard menampilkan nilai nol dan pesan:
+
+- `Belum ada buffer aktif. Jalankan forecast + DDMRP + GA di tab Analytics.`
+
 ## Parity Check (App vs Notebook Versi 2)
 
 Gunakan endpoint:

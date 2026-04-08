@@ -5,6 +5,7 @@ import { getApiBase } from "@/lib/api";
 
 export default function Dashboard() {
   const [data, setData] = useState<any>(null);
+  const [nightly, setNightly] = useState<any>(null);
 
   useEffect(() => {
     fetch(`${getApiBase()}/api/dashboard-summary`)
@@ -16,6 +17,11 @@ export default function Dashboard() {
         console.error(err);
         setData(null);
       });
+
+    fetch(`${getApiBase()}/api/analytics/nightly-status`)
+      .then((res) => res.json())
+      .then(setNightly)
+      .catch(() => setNightly(null));
   }, []);
 
   if (!data) {
@@ -27,7 +33,6 @@ export default function Dashboard() {
   }
 
   const topCritical = Array.isArray(data.top_critical) ? data.top_critical : [];
-  const fillRate = typeof data.fill_rate === "number" ? data.fill_rate : null;
 
   return (
     <div className="space-y-6 animate-in fade-in zoom-in duration-500">
@@ -36,11 +41,13 @@ export default function Dashboard() {
           <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-br from-white to-slate-400 bg-clip-text text-transparent">
             Dashboard Distributor DDMRP
           </h1>
-          <p className="text-sm text-slate-400 mt-1">Ringkasan operasional dan analitik buffer</p>
+          <p className="text-sm text-slate-400 mt-1">
+            Ringkasan operasional buffer aktif (unit replenishment: CTN)
+          </p>
         </div>
         <div className="flex items-center bg-slate-900 px-4 py-2 rounded-xl backdrop-blur-md border border-slate-800 shadow-xl">
-          <span className="text-xs text-slate-500 uppercase font-semibold mr-2">Periode</span>
-          <span className="text-sm font-bold text-teal-400">Maret 2026</span>
+          <span className="text-xs text-slate-500 uppercase font-semibold mr-2">Buffer Version</span>
+          <span className="text-sm font-bold text-teal-400">{data.buffer_active ?? "—"}</span>
         </div>
       </div>
 
@@ -70,9 +77,9 @@ export default function Dashboard() {
               <thead className="bg-slate-950/50 text-slate-400 border-b border-slate-700">
                 <tr>
                   <th className="px-4 py-3 font-medium">SKU</th>
-                  <th className="px-4 py-3 font-medium">NFE</th>
-                  <th className="px-4 py-3 font-medium">TOY</th>
-                  <th className="px-4 py-3 font-medium">TOG</th>
+                  <th className="px-4 py-3 font-medium">NFE (CTN)</th>
+                  <th className="px-4 py-3 font-medium">TOY (CTN)</th>
+                  <th className="px-4 py-3 font-medium">TOG (CTN)</th>
                   <th className="px-4 py-3 font-medium text-right">Action</th>
                 </tr>
               </thead>
@@ -112,27 +119,27 @@ export default function Dashboard() {
         </div>
 
         <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-lg p-6">
-           <h2 className="text-lg font-bold text-white mb-4">Ringkasan Kontrol Harian</h2>
+           <h2 className="text-lg font-bold text-white mb-4">Nightly Refresh (01:00)</h2>
            <ul className="space-y-4">
               <li className="flex justify-between items-center bg-slate-800/50 p-3 rounded-lg border border-slate-700">
-                 <span className="text-slate-300 text-sm">Order hari ini</span>
-                 <span className="font-bold text-blue-400">{data.perlu_replenishment ?? 0} SKU</span>
+                 <span className="text-slate-300 text-sm">Scheduler enabled</span>
+                 <span className="font-bold text-blue-400">{nightly?.enabled ? "Yes" : "No"}</span>
               </li>
               <li className="flex justify-between items-center bg-slate-800/50 p-3 rounded-lg border border-slate-700">
-                 <span className="text-slate-300 text-sm">Receipt hari ini</span>
-                 <span className="font-bold text-emerald-400">—</span>
+                 <span className="text-slate-300 text-sm">Last status</span>
+                 <span className="font-bold text-emerald-400">{nightly?.last_status ?? "—"}</span>
               </li>
-              <li className="flex justify-between items-center bg-red-900/20 p-3 rounded-lg border border-red-900/40">
-                 <span className="text-red-300 text-sm font-medium">Stockout risk</span>
-                 <span className="font-bold text-red-400">{data.zona_merah ?? 0} SKU</span>
+              <li className="flex justify-between items-center bg-slate-800/50 p-3 rounded-lg border border-slate-700">
+                 <span className="text-slate-300 text-sm font-medium">Processed SKU</span>
+                 <span className="font-bold text-indigo-300">{nightly?.processed_skus ?? 0}</span>
               </li>
            </ul>
            <div className="mt-6 p-4 rounded-xl bg-gradient-to-br from-indigo-900/40 to-purple-900/40 border border-indigo-800/50 relative overflow-hidden">
               <div className="relative z-10">
-                <p className="text-xs font-medium text-indigo-300 uppercase mb-1">Fill Rate Est.</p>
-                  <h3 className="text-3xl font-extrabold text-white">
-                    {fillRate != null ? `${fillRate}%` : "N/A"}
-                  </h3>
+                <p className="text-xs font-medium text-indigo-300 uppercase mb-1">Last Run Time</p>
+                <h3 className="text-sm font-bold text-white break-all">
+                  {nightly?.last_run_at ?? "—"}
+                </h3>
               </div>
               <div className="absolute -right-4 -bottom-4 w-20 h-20 bg-indigo-500 rounded-full blur-2xl opacity-30"></div>
            </div>
