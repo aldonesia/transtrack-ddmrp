@@ -1,16 +1,19 @@
 import os
+import time
+import threading
+from datetime import datetime, timedelta
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
-from database import engine, get_db
-from models import Base, DDMRPBuffer, DDMRPBufferDetail
+from database import engine, get_db, SessionLocal
+from models import Base, DDMRPBuffer, DDMRPBufferDetail, SKUMaster
 from sqlalchemy.orm import Session
 from fastapi import Depends
 from services.ddmrp_logic import optimize_buffer
 from api.analytics import router as analytics_router
+from api.analytics import post_run, RunBody
 from api.master import router as master_router
-from datetime import timedelta
 import math
 
 # Automatically create tables (in production use Alembic)
@@ -34,9 +37,136 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+NIGHTLY_REFRESH_HOUR = int(os.getenv("NIGHTLY_REFRESH_HOUR", "1"))
+NIGHTLY_REFRESH_MINUTE = int(os.getenv("NIGHTLY_REFRESH_MINUTE", "0"))
+NIGHTLY_REFRESH_ENABLED = os.getenv("NIGHTLY_REFRESH_ENABLED", "1") == "1"
+NIGHTLY_RUN_PARAMS = {
+    "sl_target": float(os.getenv("NIGHTLY_SL_TARGET", "0.95")),
+    "pop_size": int(os.getenv("NIGHTLY_POP_SIZE", "24")),
+    "n_gen": int(os.getenv("NIGHTLY_N_GEN", "40")),
+    "include_baseline": True,
+}
+
+_nightly_state = {
+    "enabled": NIGHTLY_REFRESH_ENABLED,
+    "running": False,
+    "last_run_at": None,
+    "last_status": None,
+    "last_message": None,
+    "processed_skus": 0,
+}
+
+
+def _run_all_sku_refresh_job() -> dict:
+    db = SessionLocal()
+    processed = 0
+    failed = 0
+    failures: list[dict] = []
+    started_at = datetime.now()
+    try:
+        sku_rows = (
+            db.query(SKUMaster.sku)
+            .filter(
+                (SKUMaster.status == "Active")
+                | (SKUMaster.status.is_(None))
+                | (SKUMaster.status == "")
+            )
+            .order_by(SKUMaster.sku.asc())
+            .all()
+        )
+        skus = [str(r[0]).strip() for r in sku_rows if r and r[0] is not None]
+        for sku in skus:
+            try:
+                body = RunBody(sku=sku, **NIGHTLY_RUN_PARAMS)
+                post_run(body, db)
+                processed += 1
+            except Exception as e:
+                failed += 1
+                failures.append({"sku": sku, "error": str(e)})
+        status = "success" if failed == 0 else "partial_success"
+        msg = f"Processed={processed}, Failed={failed}"
+        return {
+            "status": status,
+            "message": msg,
+            "processed": processed,
+            "failed": failed,
+            "failures": failures[:20],
+            "started_at": started_at.isoformat(),
+            "finished_at": datetime.now().isoformat(),
+        }
+    finally:
+        db.close()
+
+
+def _nightly_scheduler_loop():
+    while True:
+        now = datetime.now()
+        next_run = now.replace(
+            hour=NIGHTLY_REFRESH_HOUR,
+            minute=NIGHTLY_REFRESH_MINUTE,
+            second=0,
+            microsecond=0,
+        )
+        if next_run <= now:
+            next_run = next_run + timedelta(days=1)
+        wait_seconds = max((next_run - now).total_seconds(), 1)
+        time.sleep(wait_seconds)
+        if not NIGHTLY_REFRESH_ENABLED:
+            continue
+        _nightly_state["running"] = True
+        _nightly_state["last_run_at"] = datetime.now().isoformat()
+        try:
+            result = _run_all_sku_refresh_job()
+            _nightly_state["last_status"] = result["status"]
+            _nightly_state["last_message"] = result["message"]
+            _nightly_state["processed_skus"] = result["processed"]
+        except Exception as e:
+            _nightly_state["last_status"] = "failed"
+            _nightly_state["last_message"] = str(e)
+            _nightly_state["processed_skus"] = 0
+        finally:
+            _nightly_state["running"] = False
+
+
+@app.on_event("startup")
+def startup_nightly_scheduler():
+    if not NIGHTLY_REFRESH_ENABLED:
+        return
+    t = threading.Thread(target=_nightly_scheduler_loop, daemon=True)
+    t.start()
+
 @app.get("/")
 def read_root():
     return {"message": "Welcome to DDMRP API"}
+
+
+@app.get("/api/analytics/nightly-status")
+def nightly_status():
+    return {
+        **_nightly_state,
+        "hour": NIGHTLY_REFRESH_HOUR,
+        "minute": NIGHTLY_REFRESH_MINUTE,
+        "params": NIGHTLY_RUN_PARAMS,
+    }
+
+
+@app.post("/api/analytics/nightly-run-now")
+def nightly_run_now():
+    _nightly_state["running"] = True
+    _nightly_state["last_run_at"] = datetime.now().isoformat()
+    try:
+        result = _run_all_sku_refresh_job()
+        _nightly_state["last_status"] = result["status"]
+        _nightly_state["last_message"] = result["message"]
+        _nightly_state["processed_skus"] = result["processed"]
+        return {"status": "ok", "result": result}
+    except Exception as e:
+        _nightly_state["last_status"] = "failed"
+        _nightly_state["last_message"] = str(e)
+        _nightly_state["processed_skus"] = 0
+        return {"status": "failed", "message": str(e)}
+    finally:
+        _nightly_state["running"] = False
 
 @app.get("/api/dashboard-summary")
 def get_dashboard_summary(db: Session = Depends(get_db)):

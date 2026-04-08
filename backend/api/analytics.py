@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 from datetime import datetime, timedelta
+import json
 
 import numpy as np
 import pandas as pd
@@ -15,8 +16,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import DailyRecord, SKUMaster, DDMRPBuffer, DDMRPBufferDetail
-from services.data_loader import get_sku_list
+from models import DailyRecord, SKUMaster, DDMRPBuffer, DDMRPBufferDetail, ForecastRun
+from services.data_loader import get_sku_list, get_sku_params
 from services.db_dataset import load_sales_master_frames_from_db
 from services.hybrid_pipeline import (
     run_buffer_optimization,
@@ -69,6 +70,8 @@ def _forecast_to_response(result: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "sku": result["sku"],
+        "unit": "CTN",
+        "qty_per_carton": result.get("qty_per_carton"),
         "best_model": result["best_model"],
         "best_metrics": _sanitize(result["best_metrics"]),
         "comparison": cmp_df.to_dict("records"),
@@ -112,6 +115,19 @@ class RunBody(OptimizeBody):
     pass
 
 
+class IntegrationRunBody(BaseModel):
+    sku_no: str = Field(..., description="SKU number untuk integrasi sistem eksternal")
+    sl_target: float = Field(0.95, ge=0.5, le=0.999)
+    pop_size: int = Field(24, ge=6, le=80)
+    n_gen: int = Field(40, ge=5, le=120)
+    include_baseline: bool = True
+
+    @field_validator("sku_no", mode="before")
+    @classmethod
+    def _sku_key_run(cls, v):
+        return str(v).strip()
+
+
 @router.get("/dataset-status")
 def dataset_status(db: Session = Depends(get_db)):
     n_master = db.query(SKUMaster).count()
@@ -153,6 +169,8 @@ def post_forecast(body: ForecastBody, db: Session = Depends(get_db)):
     data = _get_data(db)
     try:
         result = run_forecast_for_api(data, body.sku)
+        params = get_sku_params(data, body.sku)
+        result["qty_per_carton"] = params.get("qty_per_carton")
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except Exception as e:
@@ -261,6 +279,27 @@ def _save_buffer_plan_and_details(
     return int(buf.id)
 
 
+def _save_latest_run(
+    db: Session,
+    sku: str,
+    forecast_payload: Dict[str, Any],
+    optimize_payload: Dict[str, Any],
+) -> int:
+    db.query(ForecastRun).filter(ForecastRun.sku == sku).delete()
+    row = ForecastRun(
+        sku=sku,
+        run_at=datetime.utcnow(),
+        unit="CTN",
+        qty_per_carton=int(forecast_payload.get("qty_per_carton") or 1),
+        forecast_json=json.dumps(_sanitize(forecast_payload)),
+        optimize_json=json.dumps(_sanitize(optimize_payload)),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return int(row.id)
+
+
 @router.post("/run")
 def post_run(body: RunBody, db: Session = Depends(get_db)):
     data = _get_data(db)
@@ -268,6 +307,8 @@ def post_run(body: RunBody, db: Session = Depends(get_db)):
 
     try:
         forecast_result = run_forecast_for_api(data, sku_s)
+        params = get_sku_params(data, sku_s)
+        forecast_result["qty_per_carton"] = params.get("qty_per_carton")
         out = run_buffer_optimization(
             data,
             sku_s,
@@ -300,10 +341,133 @@ def post_run(body: RunBody, db: Session = Depends(get_db)):
 
     # Don't return large detail payload; keep response small.
     response_opt = _sanitize(out)
+    forecast_response = _forecast_to_response(forecast_result)
+    latest_run_id = _save_latest_run(db, sku_s, forecast_response, response_opt)
     return {
         "buffer_id": buffer_id,
-        "forecast": _forecast_to_response(forecast_result),
+        "latest_run_id": latest_run_id,
+        "forecast": forecast_response,
         "optimize": response_opt,
+    }
+
+
+@router.post("/integration/run")
+def integration_run(body: IntegrationRunBody, db: Session = Depends(get_db)):
+    """
+    Endpoint integrasi: jalankan forecast + optimize berdasarkan sku_no.
+    """
+    run_body = RunBody(
+        sku=body.sku_no,
+        sl_target=body.sl_target,
+        pop_size=body.pop_size,
+        n_gen=body.n_gen,
+        include_baseline=body.include_baseline,
+    )
+    result = post_run(run_body, db)
+    return {
+        "sku_no": body.sku_no,
+        "status": "ok",
+        **result,
+    }
+
+
+@router.get("/latest-run")
+def get_latest_run(
+    sku: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    if not sku:
+        raise HTTPException(status_code=400, detail="Missing `sku` query param.")
+    sku_s = str(sku).strip()
+    row = (
+        db.query(ForecastRun)
+        .filter(ForecastRun.sku == sku_s)
+        .order_by(ForecastRun.run_at.desc(), ForecastRun.id.desc())
+        .first()
+    )
+    if not row:
+        return {"sku": sku_s, "latest_run": None}
+    forecast_payload = json.loads(row.forecast_json or "{}")
+    optimize_payload = json.loads(row.optimize_json or "{}")
+    return {
+        "sku": sku_s,
+        "latest_run": {
+            "id": int(row.id),
+            "run_at": row.run_at.isoformat() if row.run_at else None,
+            "unit": row.unit or "CTN",
+            "qty_per_carton": int(row.qty_per_carton or 1),
+            "forecast": forecast_payload,
+            "optimize": optimize_payload,
+        },
+    }
+
+
+@router.get("/integration/result")
+def integration_result(
+    sku_no: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Endpoint integrasi: ambil latest result forecast + optimize berdasarkan sku_no.
+    """
+    result = get_latest_run(sku=sku_no, db=db)
+    return {
+        "sku_no": str(sku_no).strip() if sku_no else None,
+        "status": "ok",
+        **result,
+    }
+
+
+@router.get("/parity-snapshot")
+def parity_snapshot(
+    sku: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Snapshot angka kunci untuk parity check manual vs notebook.
+    """
+    if not sku:
+        raise HTTPException(status_code=400, detail="Missing `sku` query param.")
+    sku_s = str(sku).strip()
+    data = _get_data(db)
+    try:
+        forecast_result = run_forecast_for_api(data, sku_s)
+        params = get_sku_params(data, sku_s)
+        forecast_result["qty_per_carton"] = params.get("qty_per_carton")
+        optimize_result = run_buffer_optimization(
+            data,
+            sku_s,
+            include_baseline=True,
+            return_detail=False,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    baseline = optimize_result.get("baseline") or {}
+    opt = (optimize_result.get("optimized") or {}).get("kpi") or {}
+    return {
+        "sku": sku_s,
+        "unit": "CTN",
+        "qty_per_carton": forecast_result.get("qty_per_carton"),
+        "forecast_best_model": forecast_result.get("best_model"),
+        "forecast_mae": (forecast_result.get("best_metrics") or {}).get("MAE"),
+        "adu_train": forecast_result.get("adu"),
+        "baseline": {
+            "fill_rate": baseline.get("fill_rate"),
+            "total_cost": baseline.get("total_cost"),
+            "tor": baseline.get("tor"),
+            "toy": baseline.get("toy"),
+            "tog": baseline.get("tog"),
+        },
+        "optimized": {
+            "fv_opt": (optimize_result.get("optimized") or {}).get("fv_opt"),
+            "ltf_opt": (optimize_result.get("optimized") or {}).get("ltf_opt"),
+            "fill_rate": opt.get("fill_rate"),
+            "total_cost": opt.get("total_cost"),
+            "tor": opt.get("tor"),
+            "toy": opt.get("toy"),
+            "tog": opt.get("tog"),
+        },
     }
 
 
@@ -342,9 +506,13 @@ def get_replenishment(
         .order_by(DDMRPBufferDetail.date.asc())
         .all()
     )
+    sm = db.query(SKUMaster).filter(SKUMaster.sku == sku_s).first()
+    qty_per_carton = int(sm.pack_size or 1) if sm is not None else 1
 
     return {
         "sku": sku_s,
+        "unit": "CTN",
+        "qty_per_carton": qty_per_carton,
         "buffer_id": int(buf.id),
         "today_date": today.isoformat(),
         "leadtime_days": int(buf.dlt or 0),
@@ -357,4 +525,20 @@ def get_replenishment(
             }
             for r in rows
         ],
+    }
+
+
+@router.get("/integration/replenishment")
+def integration_replenishment(
+    sku_no: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Endpoint integrasi: ambil replenishment berdasarkan sku_no.
+    """
+    result = get_replenishment(sku=sku_no, db=db)
+    return {
+        "sku_no": str(sku_no).strip() if sku_no else None,
+        "status": "ok",
+        **result,
     }

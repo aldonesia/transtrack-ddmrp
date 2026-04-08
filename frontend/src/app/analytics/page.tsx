@@ -3,9 +3,12 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   getDatasetStatus,
+  getLatestRun,
+  getParitySnapshot,
   listSkus,
   runForecastAndOptimize,
   runOptimize,
+  type ForecastAndOptimizeResponse,
   type DatasetStatus,
   type SkuRow,
 } from "@/lib/api";
@@ -71,13 +74,15 @@ export default function Analytics() {
   const [dataset, setDataset] = useState<DatasetStatus | null>(null);
   const [skuList, setSkuList] = useState<SkuRow[]>([]);
   const [selectedSku, setSelectedSku] = useState<string>("");
-  const [forecast, setForecast] = useState<Record<string, unknown> | null>(null);
-  const [optimize, setOptimize] = useState<Record<string, unknown> | null>(null);
+  const [forecast, setForecast] = useState<ForecastAndOptimizeResponse["forecast"] | null>(null);
+  const [optimize, setOptimize] = useState<ForecastAndOptimizeResponse["optimize"] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [slTarget, setSlTarget] = useState(0.95);
   const [popSize, setPopSize] = useState(24);
   const [nGen, setNGen] = useState(40);
+  const [latestRunAt, setLatestRunAt] = useState<string | null>(null);
+  const [parityMsg, setParityMsg] = useState<string | null>(null);
 
   useEffect(() => {
     getDatasetStatus()
@@ -107,12 +112,33 @@ export default function Analytics() {
       .catch((e) => setError(String(e.message)));
   }, []);
 
+  useEffect(() => {
+    if (!selectedSku) return;
+    getLatestRun(selectedSku)
+      .then((d) => {
+        if (!d.latest_run) {
+          setLatestRunAt(null);
+          return;
+        }
+        setForecast(d.latest_run.forecast);
+        setOptimize(d.latest_run.optimize);
+        setLatestRunAt(d.latest_run.run_at);
+      })
+      .catch(() => {
+        setLatestRunAt(null);
+      });
+  }, [selectedSku]);
+
   const bestPred = useMemo(() => {
     if (!forecast?.best_model || !forecast.predictions) return null;
     const bm = forecast.best_model as string;
     const preds = forecast.predictions as Record<string, number[]>;
     return preds[bm] ?? null;
   }, [forecast]);
+  const selectedSkuMeta = useMemo(
+    () => skuList.find((s) => String(s["ID Item"]) === String(selectedSku)),
+    [skuList, selectedSku]
+  );
 
   const onRunForecast = async () => {
     if (selectedSku === "") return;
@@ -127,6 +153,7 @@ export default function Analytics() {
       });
       setForecast(data.forecast);
       setOptimize(data.optimize);
+      setLatestRunAt(new Date().toISOString());
       setActiveTab("optimasi");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
@@ -148,7 +175,26 @@ export default function Analytics() {
       });
       setForecast(data.forecast);
       setOptimize(data.optimize);
+      setLatestRunAt(new Date().toISOString());
       setActiveTab("optimasi");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const onParityCheck = async () => {
+    if (!selectedSku) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const p = await getParitySnapshot(selectedSku);
+      setParityMsg(
+        `Parity snapshot SKU ${String(p.sku)} · model=${String(p.forecast_best_model)} · MAE=${String(
+          p.forecast_mae
+        )} · optimized total_cost=${String((p.optimized as Record<string, unknown>)?.total_cost ?? "—")}`
+      );
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -179,6 +225,16 @@ export default function Analytics() {
           <p className="text-sm text-slate-400 mt-1">
             Forecasting dan optimasi buffer (hybrid notebook) per SKU terpilih
           </p>
+          {forecast?.qty_per_carton ? (
+            <p className="text-xs text-slate-500 mt-1">
+              Unit kalkulasi: {forecast.unit ?? "CTN"} · 1 CTN = {forecast.qty_per_carton} pcs
+            </p>
+          ) : null}
+          {latestRunAt ? (
+            <p className="text-xs text-slate-500 mt-1">
+              Latest run SKU: <span className="font-mono text-slate-300">{latestRunAt}</span>
+            </p>
+          ) : null}
         </div>
       </div>
 
@@ -224,7 +280,27 @@ export default function Analytics() {
             ))}
           </select>
         </div>
+        {selectedSkuMeta ? (
+          <div className="text-xs text-slate-400 pb-1">
+            ADU: <span className="font-mono text-slate-200">{Number(selectedSkuMeta.ADU ?? 0).toFixed(2)}</span> CTN
+            {" · "}Total demand:{" "}
+            <span className="font-mono text-slate-200">{Number(selectedSkuMeta.Total_Demand ?? 0).toFixed(2)}</span> CTN
+          </div>
+        ) : null}
+        <button
+          type="button"
+          disabled={loading || selectedSku === ""}
+          onClick={onParityCheck}
+          className="bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-white px-3 py-2 rounded-lg text-xs font-semibold"
+        >
+          {loading ? "Checking…" : "Parity Snapshot"}
+        </button>
       </div>
+      {parityMsg && (
+        <div className="rounded-xl border border-slate-800 bg-slate-900/40 text-slate-300 px-4 py-3 text-xs">
+          {parityMsg}
+        </div>
+      )}
 
       <div className="flex flex-wrap gap-2 bg-slate-900/50 p-1 rounded-xl w-fit border border-slate-800">
         {[

@@ -8,6 +8,8 @@ export default function Replenishment() {
   const [selectedSku, setSelectedSku] = useState<string>("");
   const [plan, setPlan] = useState<{
     sku: string;
+    unit?: string;
+    qty_per_carton?: number;
     buffer_id: number;
     today_date: string | null;
     leadtime_days: number;
@@ -18,6 +20,10 @@ export default function Replenishment() {
   const [err, setErr] = useState<string | null>(null);
 
   const canRun = useMemo(() => selectedSku.trim().length > 0, [selectedSku]);
+  const selectedSkuMeta = useMemo(
+    () => skuList.find((s) => String(s["ID Item"]) === String(selectedSku)),
+    [skuList, selectedSku]
+  );
 
   const loadSkus = async () => {
     try {
@@ -92,6 +98,13 @@ export default function Replenishment() {
             ))}
           </select>
         </div>
+        {selectedSkuMeta ? (
+          <div className="text-xs text-slate-400 pb-1">
+            ADU: <span className="font-mono text-slate-200">{Number(selectedSkuMeta.ADU ?? 0).toFixed(2)}</span> CTN
+            {" · "}Total demand:{" "}
+            <span className="font-mono text-slate-200">{Number(selectedSkuMeta.Total_Demand ?? 0).toFixed(2)}</span> CTN
+          </div>
+        ) : null}
 
         <button
           type="button"
@@ -112,6 +125,12 @@ export default function Replenishment() {
                 <>
                   Today (server): <span className="font-mono text-indigo-300">{plan.today_date ?? "—"}</span> · Lead time:{' '}
                   <span className="font-mono text-indigo-300">{plan.leadtime_days}</span> hari
+                  {plan.qty_per_carton ? (
+                    <>
+                      {" "}· Unit: <span className="font-mono text-indigo-300">{plan.unit ?? "CTN"}</span> (1 CTN ={" "}
+                      <span className="font-mono text-indigo-300">{plan.qty_per_carton}</span> pcs)
+                    </>
+                  ) : null}
                 </>
               ) : (
                 "Jalankan forecast di tab Analytics untuk menghasilkan buffer aktif."
@@ -134,8 +153,8 @@ export default function Replenishment() {
                 <thead className="bg-slate-950 text-slate-400 border-b border-slate-800">
                   <tr>
                     <th className="px-4 py-3 font-medium">Tanggal</th>
-                    <th className="px-4 py-3 font-medium text-right">Order Qty</th>
-                    <th className="px-4 py-3 font-medium text-right">NFE</th>
+                    <th className="px-4 py-3 font-medium text-right">Order Qty (CTN)</th>
+                    <th className="px-4 py-3 font-medium text-right">NFE (CTN)</th>
                     <th className="px-4 py-3 font-medium">Zona</th>
                   </tr>
                 </thead>

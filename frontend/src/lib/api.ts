@@ -103,6 +103,14 @@ export function masterSkuTemplateUrl(): string {
   return `${getApiBase()}/api/master/template/master-sku`;
 }
 
+export function exportMasterSkuUrl(): string {
+  return `${getApiBase()}/api/master/export/master-sku`;
+}
+
+export function exportDemandUrl(): string {
+  return `${getApiBase()}/api/master/export/demand`;
+}
+
 export async function uploadMasterSkuExcel(file: File) {
   const fd = new FormData();
   fd.append("file", file);
@@ -197,9 +205,59 @@ export async function runForecast(sku: string | number) {
 
 export type ForecastAndOptimizeResponse = {
   buffer_id: number;
-  forecast: Record<string, unknown>;
-  optimize: Record<string, unknown>;
+  latest_run_id?: number;
+  forecast: {
+    sku: string;
+    unit?: string;
+    qty_per_carton?: number;
+    best_model?: string;
+    best_metrics?: Record<string, unknown>;
+    comparison?: Array<Record<string, unknown>>;
+    predictions?: Record<string, number[]>;
+    actual_test?: number[];
+    test_dates?: string[];
+    train_size?: number;
+    adu?: number;
+    series_clean?: number[];
+    n_points?: number;
+  };
+  optimize: Record<string, unknown> & {
+    unit?: string;
+    qty_per_carton?: number;
+  };
 };
+
+export async function getLatestRun(sku: string | number) {
+  const r = await fetch(
+    `${getApiBase()}/api/analytics/latest-run?sku=${encodeURIComponent(String(sku))}`,
+  );
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return (await r.json()) as {
+    sku: string;
+    latest_run: {
+      id: number;
+      run_at: string | null;
+      unit: string;
+      qty_per_carton: number;
+      forecast: ForecastAndOptimizeResponse["forecast"];
+      optimize: ForecastAndOptimizeResponse["optimize"];
+    } | null;
+  };
+}
+
+export async function getParitySnapshot(sku: string | number) {
+  const r = await fetch(
+    `${getApiBase()}/api/analytics/parity-snapshot?sku=${encodeURIComponent(String(sku))}`,
+  );
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json() as Promise<Record<string, unknown>>;
+}
 
 export async function runForecastAndOptimize(
   sku: string | number,
@@ -262,6 +320,8 @@ export async function getReplenishmentPlan(sku: string | number) {
   }
   return (await r.json()) as {
     sku: string;
+    unit?: string;
+    qty_per_carton?: number;
     buffer_id: number;
     today_date: string | null;
     leadtime_days: number;

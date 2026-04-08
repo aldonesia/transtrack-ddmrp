@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Date, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Text, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -84,3 +84,15 @@ class DDMRPBufferDetail(Base):
     order_qty = Column(Float, default=0)
     nfe = Column(Float, default=0)
     zone = Column(String, nullable=True)  # Red, Yellow, Green
+
+
+class ForecastRun(Base):
+    __tablename__ = "forecast_run"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sku = Column(String, ForeignKey("sku_master.sku"), index=True)
+    run_at = Column(DateTime, index=True)
+    unit = Column(String, default="CTN")
+    qty_per_carton = Column(Integer, default=1)
+    forecast_json = Column(Text)  # serialized JSON payload
+    optimize_json = Column(Text)  # serialized JSON payload

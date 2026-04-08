@@ -29,6 +29,8 @@ def _master_row_dict(m: SKUMaster) -> Dict[str, Any]:
         "Lost Sale Rate/Each": lost,
         "Logistic Cost/Order": log_cost,
         "MOQ": int(m.moq or 1),
+        # pack_size in master acts as carton mapping (pcs per carton) when provided.
+        "Qty Per Carton": int(m.pack_size or 1),
         "Material Group": str(m.group or m.nama_item or ""),
     }
 
@@ -69,6 +71,7 @@ def load_sales_master_frames_from_db(db: Session) -> Dict[str, pd.DataFrame]:
                     "Lost Sale Rate/Each",
                     "Logistic Cost/Order",
                     "MOQ",
+                    "Qty Per Carton",
                     "Material Group",
                 ]
             ),

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   demandTemplateUrl,
+  exportDemandUrl,
   listDemandRows,
   validateDemandExcel,
   uploadDemandExcel,
@@ -17,6 +18,8 @@ export default function MasterDemandPage() {
   const [err, setErr] = useState<string | null>(null);
   const [rows, setRows] = useState<DemandRow[]>([]);
   const [listBusy, setListBusy] = useState(false);
+  const [lastUploadSummary, setLastUploadSummary] = useState<string | null>(null);
+  const [lastExportAt, setLastExportAt] = useState<string | null>(null);
 
   const reloadList = async () => {
     setListBusy(true);
@@ -65,6 +68,9 @@ export default function MasterDemandPage() {
     try {
       const r = await uploadDemandExcel(file);
       setMsg(`Upload demand: +${r.inserted} baru, ${r.updated} diperbarui (${r.rows_in_file} baris).`);
+      setLastUploadSummary(
+        `Upload terakhir ${new Date().toLocaleString()} · inserted=${r.inserted}, updated=${r.updated}, rows=${r.rows_in_file}`
+      );
       setValidation(null);
       setFile(null);
       await reloadList();
@@ -86,6 +92,13 @@ export default function MasterDemandPage() {
             Upload demand harian (dari Excel) dengan preview validasi sebelum simpan.
           </p>
         </div>
+        <a
+          href={exportDemandUrl()}
+          onClick={() => setLastExportAt(new Date().toLocaleString())}
+          className="text-sm text-indigo-400 hover:text-indigo-300"
+        >
+          ↓ Export Master Demand
+        </a>
       </div>
 
       {msg && (
@@ -96,6 +109,16 @@ export default function MasterDemandPage() {
       {err && (
         <div className="rounded-xl border border-red-900/50 bg-red-950/30 text-red-200 px-4 py-3 text-sm">
           {err}
+        </div>
+      )}
+      {lastUploadSummary && (
+        <div className="rounded-xl border border-slate-800 bg-slate-900/40 text-slate-300 px-4 py-3 text-xs">
+          {lastUploadSummary}
+        </div>
+      )}
+      {lastExportAt && (
+        <div className="rounded-xl border border-slate-800 bg-slate-900/40 text-slate-300 px-4 py-3 text-xs">
+          Export terakhir: {lastExportAt}
         </div>
       )}
 

@@ -60,7 +60,7 @@ def run_buffer_optimization(
             ltf,
             params["dlt"],
             moq,
-            params["price_ea"],
+            params["price_ctn"],
             params["hold_cost_per_unit_day"],
             params["order_cost"],
             params["penalty_per_unit"],
@@ -91,6 +91,8 @@ def run_buffer_optimization(
 
     return {
         "sku": sku_s,
+        "unit": "CTN",
+        "qty_per_carton": params.get("qty_per_carton"),
         "classification": clf,
         "forecast_best_model": result_fc["best_model"],
         "forecast_metrics": result_fc["best_metrics"],

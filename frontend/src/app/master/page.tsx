@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  exportMasterSkuUrl,
   masterSkuTemplateUrl,
   listMasterSkus,
   saveMasterSku,
@@ -13,7 +14,7 @@ import {
 const emptyForm = {
   sku: "",
   nama_item: "",
-  unit: "pcs",
+  unit: "ctn",
   lead_time: 3,
   moq: 100,
   pack_size: 10,
@@ -36,6 +37,8 @@ export default function MasterData() {
   const [uploadMasterBusy, setUploadMasterBusy] = useState(false);
   const [masterFile, setMasterFile] = useState<File | null>(null);
   const [masterValidation, setMasterValidation] = useState<Record<string, unknown> | null>(null);
+  const [lastUploadSummary, setLastUploadSummary] = useState<string | null>(null);
+  const [lastExportAt, setLastExportAt] = useState<string | null>(null);
 
   const reload = useCallback(() => {
     listMasterSkus()
@@ -96,6 +99,9 @@ export default function MasterData() {
     try {
       const r = await uploadMasterSkuExcel(masterFile);
       setMsg(`Upload master SKU: +${r.inserted} baru, ${r.updated} diperbarui (${r.rows_in_file} baris).`);
+      setLastUploadSummary(
+        `Upload terakhir ${new Date().toLocaleString()} · inserted=${r.inserted}, updated=${r.updated}, rows=${r.rows_in_file}`
+      );
       setMasterValidation(null);
       setMasterFile(null);
       reload();
@@ -117,6 +123,13 @@ export default function MasterData() {
             Kelola Master SKU untuk kebutuhan forecasting & optimasi DDMRP (data tersimpan ke database).
           </p>
         </div>
+        <a
+          href={exportMasterSkuUrl()}
+          onClick={() => setLastExportAt(new Date().toLocaleString())}
+          className="text-sm text-indigo-400 hover:text-indigo-300"
+        >
+          ↓ Export Master SKU
+        </a>
       </div>
 
       {msg && (
@@ -127,6 +140,16 @@ export default function MasterData() {
       {err && (
         <div className="rounded-xl border border-red-900/50 bg-red-950/30 text-red-200 px-4 py-3 text-sm">
           {err}
+        </div>
+      )}
+      {lastUploadSummary && (
+        <div className="rounded-xl border border-slate-800 bg-slate-900/40 text-slate-300 px-4 py-3 text-xs">
+          {lastUploadSummary}
+        </div>
+      )}
+      {lastExportAt && (
+        <div className="rounded-xl border border-slate-800 bg-slate-900/40 text-slate-300 px-4 py-3 text-xs">
+          Export terakhir: {lastExportAt}
         </div>
       )}
 
@@ -209,7 +232,7 @@ export default function MasterData() {
                 ["unit", "Unit", "text"],
                 ["lead_time", "Lead time (hari)", "number"],
                 ["moq", "MOQ", "number"],
-                ["pack_size", "Pack size", "number"],
+                ["pack_size", "Qty per Carton (pcs/ctn)", "number"],
                 ["harga", "Harga jual (ea)", "number"],
                 ["purchase_price", "Harga beli", "number"],
                 ["holding_cost_rate_day", "Holding cost rate/hari (× harga)", "number"],
@@ -253,6 +276,7 @@ export default function MasterData() {
             <p className="text-slate-400 mb-4 text-sm">
               Wajib kolom: Material Number, Material Group, Lead Time_Days, Sales Price, Purchase
               Price, Holding Cost Rate/day, Lost Sale Rate/Each, Logistic Cost/Order, MOQ.
+              Opsional: Qty Per Carton (default 1 jika tidak diisi).
             </p>
             <a
               href={masterSkuTemplateUrl()}
@@ -285,6 +309,9 @@ export default function MasterData() {
                 >
                   Simpan Data Valid
                 </button>
+                <p className="text-xs text-slate-500">
+                  SKU dengan kode yang sama akan di-<strong>update</strong>, bukan ditolak.
+                </p>
               </div>
             )}
           </div>

@@ -24,6 +24,13 @@ services:
       - DATABASE_URL=postgresql://ddmrp_user:ddmrp_password@db/ddmrp_db
       # Browser origin(s) allowed to call the API (not the API hostname)
       - CORS_ORIGINS=http://localhost:3001,https://transtrack-ddmrp.skom.my.id
+      # Nightly refresh all SKU at 01:00
+      - NIGHTLY_REFRESH_ENABLED=1
+      - NIGHTLY_REFRESH_HOUR=1
+      - NIGHTLY_REFRESH_MINUTE=0
+      - NIGHTLY_SL_TARGET=0.95
+      - NIGHTLY_POP_SIZE=24
+      - NIGHTLY_N_GEN=40
     depends_on:
       - db
     volumes:

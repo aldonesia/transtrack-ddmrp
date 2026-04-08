@@ -53,6 +53,7 @@ def download_master_sku_template():
             "Lost Sale Rate/Each": [0.15, 0.12],
             "Logistic Cost/Order": [750000, 750000],
             "MOQ": [100, 50],
+            "Qty Per Carton": [40, 24],
         }
     )
     buf = BytesIO()
@@ -65,10 +66,42 @@ def download_master_sku_template():
     )
 
 
+@router.get("/export/master-sku")
+def export_master_sku(db: Session = Depends(get_db)):
+    rows = db.query(SKUMaster).order_by(SKUMaster.sku).all()
+    df = pd.DataFrame(
+        [
+            {
+                "Material Number": r.sku,
+                "Material Group": r.group,
+                "Lead Time_Days": r.lead_time,
+                "Sales Price": r.harga,
+                "Purchase Price": r.purchase_price,
+                "Holding Cost Rate/day": r.holding_cost_rate_day,
+                "Lost Sale Rate/Each": r.lost_sale_rate_each,
+                "Logistic Cost/Order": r.logistic_cost_order,
+                "MOQ": r.moq,
+                "Qty Per Carton": r.pack_size,
+                "Unit": r.unit,
+                "Status": r.status,
+            }
+            for r in rows
+        ]
+    )
+    buf = BytesIO()
+    df.to_excel(buf, index=False, sheet_name="master_sku")
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="master_sku_export.xlsx"'},
+    )
+
+
 class SKUMasterIn(BaseModel):
     sku: str = Field(..., min_length=1, max_length=64)
     nama_item: str = ""
-    unit: str = "pcs"
+    unit: str = "ctn"
     lead_time: int = Field(1, ge=0)
     moq: int = Field(1, ge=1)
     pack_size: int = Field(1, ge=1)
@@ -150,6 +183,8 @@ def _coerce_demand_upload(df: pd.DataFrame) -> pd.DataFrame:
 
 def _coerce_master_sku_upload(df: pd.DataFrame) -> pd.DataFrame:
     dfn = _normalize_column_map(df)
+    if "qty per carton" not in dfn.columns and "qty_per_carton" not in dfn.columns:
+        raise ValueError("Kolom Qty Per Carton wajib ada untuk mapping carton per SKU.")
 
     required = {
         "material number": "material_number",
@@ -183,8 +218,16 @@ def _coerce_master_sku_upload(df: pd.DataFrame) -> pd.DataFrame:
             lost_sale_rate_each = float(pd.to_numeric(row["lost sale rate/each"], errors="raise"))
             logistic_cost_order = float(pd.to_numeric(row["logistic cost/order"], errors="raise"))
             moq = int(pd.to_numeric(row["moq"], errors="raise"))
+            qty_col = (
+                "qty per carton"
+                if "qty per carton" in dfn.columns
+                else ("qty_per_carton" if "qty_per_carton" in dfn.columns else None)
+            )
+            qty_per_carton = int(pd.to_numeric(row[qty_col], errors="coerce") or 1) if qty_col else 1
             if moq <= 0:
                 continue
+            if qty_per_carton <= 0:
+                qty_per_carton = 1
         except Exception:
             continue
         rows.append(
@@ -198,6 +241,7 @@ def _coerce_master_sku_upload(df: pd.DataFrame) -> pd.DataFrame:
                 "lost_sale_rate_each": max(0.0, lost_sale_rate_each),
                 "logistic_cost_order": max(0.0, logistic_cost_order),
                 "moq": max(1, moq),
+                "qty_per_carton": max(1, qty_per_carton),
             }
         )
     if not rows:
@@ -217,7 +261,10 @@ def _validate_master_sku_upload(df: pd.DataFrame) -> dict[str, Any]:
         "lost sale rate/each",
         "logistic cost/order",
         "moq",
+        "qty per carton",
     ]
+    if "qty per carton" not in dfn.columns and "qty_per_carton" in dfn.columns:
+        dfn = dfn.rename(columns={"qty_per_carton": "qty per carton"})
     missing = [k for k in required if k not in dfn.columns]
     if missing:
         return {
@@ -244,10 +291,18 @@ def _validate_master_sku_upload(df: pd.DataFrame) -> dict[str, Any]:
             lost = float(pd.to_numeric(row["lost sale rate/each"], errors="raise"))
             log_cost = float(pd.to_numeric(row["logistic cost/order"], errors="raise"))
             moq = int(pd.to_numeric(row["moq"], errors="raise"))
+            qty_col = (
+                "qty per carton"
+                if "qty per carton" in dfn.columns
+                else ("qty_per_carton" if "qty_per_carton" in dfn.columns else None)
+            )
+            qty_per_carton = int(pd.to_numeric(row[qty_col], errors="coerce") or 1) if qty_col else 1
             if not sku:
                 raise ValueError("Material Number kosong")
             if moq <= 0:
                 raise ValueError("MOQ harus > 0")
+            if qty_per_carton <= 0:
+                raise ValueError("Qty Per Carton harus > 0")
             valid.append(
                 {
                     "sku": sku,
@@ -259,6 +314,7 @@ def _validate_master_sku_upload(df: pd.DataFrame) -> dict[str, Any]:
                     "lost_sale_rate_each": max(0.0, lost),
                     "logistic_cost_order": max(0.0, log_cost),
                     "moq": max(1, moq),
+                    "qty_per_carton": max(1, qty_per_carton),
                 }
             )
         except Exception as e:
@@ -432,7 +488,7 @@ async def upload_master_sku(
             "lost_sale_rate_each": float(row["lost_sale_rate_each"]),
             "logistic_cost_order": float(row["logistic_cost_order"]),
             "moq": int(row["moq"]),
-            "pack_size": int(row["moq"]),
+            "pack_size": int(row["qty_per_carton"]),
             "status": "Active",
         }
         if existing:
@@ -443,7 +499,7 @@ async def upload_master_sku(
             db.add(
                 SKUMaster(
                     sku=sku,
-                    unit="pcs",
+                    unit="ctn",
                     target_sl=0.95,
                     **payload,
                 )
@@ -504,6 +560,34 @@ def list_demand(
             for (dr, nama_item, grp) in rows
         ]
     }
+
+
+@router.get("/export/demand")
+def export_demand(db: Session = Depends(get_db)):
+    rows = (
+        db.query(DailyRecord)
+        .order_by(DailyRecord.date.asc(), DailyRecord.sku.asc())
+        .all()
+    )
+    df = pd.DataFrame(
+        [
+            {
+                "Date": r.date.isoformat() if r.date else None,
+                "SKU": r.sku,
+                "Demand": float(r.demand or 0),
+                "Promo_Discount": float(r.promo_discount or 0),
+            }
+            for r in rows
+        ]
+    )
+    buf = BytesIO()
+    df.to_excel(buf, index=False, sheet_name="demand")
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="demand_export.xlsx"'},
+    )
 
 
 @router.post("/upload/demand")
