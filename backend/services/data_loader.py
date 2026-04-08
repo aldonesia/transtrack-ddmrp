@@ -76,21 +76,26 @@ def load_all_data(file_path: Optional[str] = None) -> Dict[str, pd.DataFrame]:
     return {"sales": df_s, "master": df_m, "carton_mapping": carton_mapping}
 
 
-def get_sku_list(data: Dict[str, pd.DataFrame], show: bool = False) -> pd.DataFrame:
+def get_sku_list(
+    data: Dict[str, pd.DataFrame],
+    show: bool = False,
+    strict_carton_mapping: bool = True,
+) -> pd.DataFrame:
     df_s = data["sales"].copy()
     df_m = data["master"].copy()
     carton_mapping = data.get("carton_mapping", {})
     df_s["ID Item"] = df_s["ID Item"].astype(str)
     df_m["Material Number"] = df_m["Material Number"].astype(str)
     missing = sorted(set(df_s["ID Item"].unique()) - set(carton_mapping.keys()))
-    if missing:
+    if missing and strict_carton_mapping:
         raise ValueError(
             "Qty Per Carton wajib tersedia untuk semua SKU. "
             f"SKU tanpa mapping: {', '.join(missing[:10])}"
             + (" ..." if len(missing) > 10 else "")
         )
+    default_qty = 1
     df_s["qty_per_carton"] = (
-        df_s["ID Item"].map(lambda x: carton_mapping.get(str(x).strip(), 1)).astype(float)
+        df_s["ID Item"].map(lambda x: carton_mapping.get(str(x).strip(), default_qty)).astype(float)
     )
     df_s["qty_per_carton"] = df_s["qty_per_carton"].replace(0, 1)
     # Listing metrics should follow carton unit (CTN) consistently.

@@ -156,7 +156,9 @@ def list_skus(db: Session = Depends(get_db)):
     data = _get_data(db)
     if data["sales"].empty:
         return {"skus": []}
-    g = get_sku_list(data, show=False)
+    # For listing endpoint keep UI available even when some SKU
+    # still miss carton mapping; strict validation remains on run/forecast paths.
+    g = get_sku_list(data, show=False, strict_carton_mapping=False)
     records = g.to_dict("records")
     for r in records:
         if "ID Item" in r and r["ID Item"] is not None:
