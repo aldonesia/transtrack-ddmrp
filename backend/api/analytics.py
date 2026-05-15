@@ -1,6 +1,6 @@
 """
-Forecast + buffer optimization API (DDMRP_Hybrid_Algorithm.ipynb).
-Reads sales + master from database (upload via Master Data).
+Forecast + buffer optimization API (DDMRP_Hybrid_Algorithm_Last_Version.ipynb).
+Reads sales + master from database (upload via Master Data). Quantities are in PCS (single unit).
 """
 from __future__ import annotations
 
@@ -54,7 +54,7 @@ def _sanitize(obj: Any) -> Any:
     return obj
 
 
-def _forecast_to_response(result: Dict[str, Any]) -> Dict[str, Any]:
+def _forecast_to_response(result: Dict[str, Any], unit: str = "EA") -> Dict[str, Any]:
     cmp_df = result["comparison"].copy()
     cmp_df = cmp_df.replace({np.nan: None})
     test_dates = result["test_dates"]
@@ -70,8 +70,7 @@ def _forecast_to_response(result: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "sku": result["sku"],
-        "unit": "CTN",
-        "qty_per_carton": result.get("qty_per_carton"),
+        "unit": unit,
         "best_model": result["best_model"],
         "best_metrics": _sanitize(result["best_metrics"]),
         "comparison": cmp_df.to_dict("records"),
@@ -97,8 +96,8 @@ class ForecastBody(BaseModel):
 class OptimizeBody(BaseModel):
     sku: str = Field(..., description="SKU dari master")
     sl_target: float = Field(0.95, ge=0.5, le=0.999)
-    pop_size: int = Field(24, ge=6, le=80)
-    n_gen: int = Field(40, ge=5, le=120)
+    pop_size: int = Field(30, ge=6, le=80)
+    n_gen: int = Field(80, ge=5, le=120)
     include_baseline: bool = True
 
     @field_validator("sku", mode="before")
@@ -118,8 +117,8 @@ class RunBody(OptimizeBody):
 class IntegrationRunBody(BaseModel):
     sku_no: str = Field(..., description="SKU number untuk integrasi sistem eksternal")
     sl_target: float = Field(0.95, ge=0.5, le=0.999)
-    pop_size: int = Field(24, ge=6, le=80)
-    n_gen: int = Field(40, ge=5, le=120)
+    pop_size: int = Field(30, ge=6, le=80)
+    n_gen: int = Field(80, ge=5, le=120)
     include_baseline: bool = True
 
     @field_validator("sku_no", mode="before")
@@ -156,9 +155,8 @@ def list_skus(db: Session = Depends(get_db)):
     data = _get_data(db)
     if data["sales"].empty:
         return {"skus": []}
-    # For listing endpoint keep UI available even when some SKU
-    # still miss carton mapping; strict validation remains on run/forecast paths.
-    g = get_sku_list(data, show=False, strict_carton_mapping=False)
+    # Listing: all quantities are in PCS (no carton conversion).
+    g = get_sku_list(data, show=False)
     records = g.to_dict("records")
     for r in records:
         if "ID Item" in r and r["ID Item"] is not None:
@@ -170,14 +168,13 @@ def list_skus(db: Session = Depends(get_db)):
 def post_forecast(body: ForecastBody, db: Session = Depends(get_db)):
     data = _get_data(db)
     try:
+        unit = str(get_sku_params(data, body.sku).get("unit") or "EA").upper()
         result = run_forecast_for_api(data, body.sku)
-        params = get_sku_params(data, body.sku)
-        result["qty_per_carton"] = params.get("qty_per_carton")
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
-    return _forecast_to_response(result)
+    return _forecast_to_response(result, unit=unit)
 
 
 @router.post("/optimize")
@@ -239,9 +236,9 @@ def _save_buffer_plan_and_details(
 
     version = datetime.utcnow().strftime("v%Y.%m.%d.%H%M%S")
     # If GA returned optimized vf/ltf in classification-less place, prefer it later.
-    tor = float(classification.get("tor") or 0)
-    toy = float(classification.get("toy") or 0)
-    tog = float(classification.get("tog") or 0)
+    tor = float(optimized_kpi.get("tor") or classification.get("tor") or 0)
+    toy = float(optimized_kpi.get("toy") or classification.get("toy") or 0)
+    tog = float(optimized_kpi.get("tog") or classification.get("tog") or 0)
 
     buf = DDMRPBuffer(
         sku=sku,
@@ -291,8 +288,8 @@ def _save_latest_run(
     row = ForecastRun(
         sku=sku,
         run_at=datetime.utcnow(),
-        unit="CTN",
-        qty_per_carton=int(forecast_payload.get("qty_per_carton") or 1),
+        unit="PCS",
+        qty_per_carton=1,
         forecast_json=json.dumps(_sanitize(forecast_payload)),
         optimize_json=json.dumps(_sanitize(optimize_payload)),
     )
@@ -309,8 +306,6 @@ def post_run(body: RunBody, db: Session = Depends(get_db)):
 
     try:
         forecast_result = run_forecast_for_api(data, sku_s)
-        params = get_sku_params(data, sku_s)
-        forecast_result["qty_per_carton"] = params.get("qty_per_carton")
         out = run_buffer_optimization(
             data,
             sku_s,
@@ -343,7 +338,8 @@ def post_run(body: RunBody, db: Session = Depends(get_db)):
 
     # Don't return large detail payload; keep response small.
     response_opt = _sanitize(out)
-    forecast_response = _forecast_to_response(forecast_result)
+    unit = str(get_sku_params(data, sku_s).get("unit") or out.get("unit") or "EA").upper()
+    forecast_response = _forecast_to_response(forecast_result, unit=unit)
     latest_run_id = _save_latest_run(db, sku_s, forecast_response, response_opt)
     return {
         "buffer_id": buffer_id,
@@ -396,8 +392,7 @@ def get_latest_run(
         "latest_run": {
             "id": int(row.id),
             "run_at": row.run_at.isoformat() if row.run_at else None,
-            "unit": row.unit or "CTN",
-            "qty_per_carton": int(row.qty_per_carton or 1),
+            "unit": row.unit or "PCS",
             "forecast": forecast_payload,
             "optimize": optimize_payload,
         },
@@ -434,8 +429,6 @@ def parity_snapshot(
     data = _get_data(db)
     try:
         forecast_result = run_forecast_for_api(data, sku_s)
-        params = get_sku_params(data, sku_s)
-        forecast_result["qty_per_carton"] = params.get("qty_per_carton")
         optimize_result = run_buffer_optimization(
             data,
             sku_s,
@@ -449,8 +442,7 @@ def parity_snapshot(
     opt = (optimize_result.get("optimized") or {}).get("kpi") or {}
     return {
         "sku": sku_s,
-        "unit": "CTN",
-        "qty_per_carton": forecast_result.get("qty_per_carton"),
+        "unit": "PCS",
         "forecast_best_model": forecast_result.get("best_model"),
         "forecast_mae": (forecast_result.get("best_metrics") or {}).get("MAE"),
         "adu_train": forecast_result.get("adu"),
@@ -494,6 +486,9 @@ def get_replenishment(
             detail=f"No active DDMRP plan found for SKU {sku_s}. Run forecast/optimization first.",
         )
 
+    master = db.query(SKUMaster).filter(SKUMaster.sku == sku_s).first()
+    unit = str(master.unit or "EA").strip().upper() if master else "EA"
+
     if not buf.start_date:
         raise HTTPException(status_code=404, detail="Active buffer missing start_date.")
     today = buf.start_date
@@ -508,16 +503,21 @@ def get_replenishment(
         .order_by(DDMRPBufferDetail.date.asc())
         .all()
     )
-    sm = db.query(SKUMaster).filter(SKUMaster.sku == sku_s).first()
-    qty_per_carton = int(sm.pack_size or 1) if sm is not None else 1
 
     return {
         "sku": sku_s,
-        "unit": "CTN",
-        "qty_per_carton": qty_per_carton,
+        "unit": unit,
         "buffer_id": int(buf.id),
+        "version": buf.version,
         "today_date": today.isoformat(),
+        "end_date": end.isoformat(),
         "leadtime_days": int(buf.dlt or 0),
+        "adu": float(buf.adu or 0),
+        "vf_opt": float(buf.vf_opt or 0),
+        "ltf_opt": float(buf.ltf_opt or 0),
+        "tor": float(buf.tor or 0),
+        "toy": float(buf.toy or 0),
+        "tog": float(buf.tog or 0),
         "recommendations": [
             {
                 "date": r.date.isoformat() if r.date else None,
@@ -574,13 +574,12 @@ def get_buffer_active(
     min_nfe = float(min((float(r["nfe"]) for r in recommendations), default=0.0))
     max_nfe = float(max((float(r["nfe"]) for r in recommendations), default=0.0))
 
-    sm = db.query(SKUMaster).filter(SKUMaster.sku == sku_s).first()
-    qty_per_carton = int(sm.pack_size or 1) if sm is not None else 1
+    master = db.query(SKUMaster).filter(SKUMaster.sku == sku_s).first()
+    unit = str(master.unit or "EA").strip().upper() if master else "EA"
 
     return {
         "sku": sku_s,
-        "unit": "CTN",
-        "qty_per_carton": qty_per_carton,
+        "unit": unit,
         "buffer_id": int(buf.id),
         "version": buf.version,
         "status": buf.status,

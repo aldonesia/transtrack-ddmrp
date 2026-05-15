@@ -59,7 +59,12 @@ def classify_sku(df_demand: pd.DataFrame, params: Dict[str, Any], verbose: bool 
     bzr = adu * dlt * ltf_init
     tor = bzr * vf_init
     toy = tor + adu * dlt
-    tog = toy + bzr
+    _hc = float(params.get("hold_cost_per_unit_day") or 0)
+    _oc = float(params.get("order_cost") or 0)
+    moq = int(params.get("moq") or params.get("moq_each") or 1)
+    doc = math.sqrt(2 * _oc * adu / _hc) if _hc > 0 and adu > 0 else 0.0
+    dbo = round(doc / adu, 1) if adu > 0 else 0.0
+    tog = toy + max(bzr, doc, moq)
 
     result = {
         "sku": params["sku"],
@@ -80,6 +85,9 @@ def classify_sku(df_demand: pd.DataFrame, params: Dict[str, Any], verbose: bool 
         "vf_init": round(vf_init, 4),
         "ltf_init": round(ltf_init, 4),
         "bzr": round(bzr, 1),
+        "doc": round(doc, 2),
+        "dbo": dbo,
+        "moq": moq,
         "tor": round(tor, 1),
         "toy": round(toy, 1),
         "tog": round(tog, 1),

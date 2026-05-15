@@ -3,8 +3,9 @@ import "./globals.css";
 import type { Metadata } from "next";
 
 export const metadata: Metadata = {
-  title: "DDMRP Dashboard",
-  description: "Demand Driven Material Requirements Planning",
+  title: "IDAS — Inventory Decision Analytic System",
+  description:
+    "IDAS (Inventory Decision Analytic System): operational dashboard, master data, buffer analytics, replenishment.",
 };
 
 export default function RootLayout({

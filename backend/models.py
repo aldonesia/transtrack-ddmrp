@@ -4,20 +4,50 @@ from sqlalchemy.orm import declarative_base
 Base = declarative_base()
 
 class SKUMaster(Base):
+    """
+  Excel `sku_master` column → DB field:
+    Material Number → sku
+    Material Description → nama_item
+    Material Group → group
+    Unit → unit
+    Criticality → criticality
+    ABC Class → abc_class
+    XYZ Class → xyz_class
+    Vendor Type → vendor_type
+    Currency → currency
+    Lead Time_Days → lead_time
+    MOQ → moq
+    Sales Price → harga
+    Purchase Price → purchase_price
+    Holding Cost Rate/day → holding_cost_rate_day
+    Holding Cost/day (IDR) → holding_cost_day_idr
+    Lost Sale Rate/Each → lost_sale_rate_each
+    Penalty/unit (IDR) → penalty_per_unit_idr
+    Logistic Cost/Order → logistic_cost_order
+    (Status is UI-only default Active, not in standard import template.)
+    """
     __tablename__ = "sku_master"
-    
+
     sku = Column(String, primary_key=True, index=True)
     nama_item = Column(String)
-    unit = Column(String)
-    lead_time = Column(Integer)  # Days Lead Time (DLT)
+    unit = Column(String, default="pcs")
+    lead_time = Column(Integer)
     moq = Column(Integer)
-    pack_size = Column(Integer)
-    harga = Column(Float)  # sales price (ea) — sync with notebook "Sales Price"
+    pack_size = Column(Integer, default=1)
+    harga = Column(Float)
     target_sl = Column(Float)
     status = Column(String)
     group = Column(String, nullable=True)  # material / product group
     lt_category = Column(String, nullable=True)
     category = Column(String, nullable=True)  # Runner, Repeater, Stranger
+
+    criticality = Column(String, nullable=True)
+    abc_class = Column(String, nullable=True)
+    xyz_class = Column(String, nullable=True)
+    vendor_type = Column(String, nullable=True)
+    currency = Column(String, nullable=True)
+    holding_cost_day_idr = Column(Float, nullable=True)
+    penalty_per_unit_idr = Column(Float, nullable=True)
 
     purchase_price = Column(Float, nullable=True)
     holding_cost_rate_day = Column(Float, nullable=True)  # fraction × harga = hold cost / unit / day
@@ -92,7 +122,7 @@ class ForecastRun(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     sku = Column(String, ForeignKey("sku_master.sku"), index=True)
     run_at = Column(DateTime, index=True)
-    unit = Column(String, default="CTN")
+    unit = Column(String, default="PCS")
     qty_per_carton = Column(Integer, default=1)
     forecast_json = Column(Text)  # serialized JSON payload
     optimize_json = Column(Text)  # serialized JSON payload

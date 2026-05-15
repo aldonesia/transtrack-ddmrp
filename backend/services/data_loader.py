@@ -1,6 +1,7 @@
 """
 Load preprocessed Excel (sales + sku_master) — same schema as DDMRP_Hybrid_Algorithm.ipynb.
 Set DDMRP_DATASET_PATH or place dataset_after_preprocessing.xlsx under resources_ext/.
+All demand and simulation quantities use a single planning unit (PCS / EA); no carton conversion.
 """
 from __future__ import annotations
 
@@ -11,74 +12,6 @@ from typing import Any, Dict, Optional, Union
 import pandas as pd
 
 _SKU_KEY = Union[int, str]
-
-
-def _build_carton_mapping(df_master: pd.DataFrame) -> Dict[str, int]:
-    candidate_cols = [
-        "Qty Per Carton",
-        "Qty_per_Carton",
-        "Qty per Carton",
-        "Pcs per CTN",
-        "Pcs/CTN",
-        "Each per Carton",
-        "Carton Size",
-        "Pack Size",
-    ]
-    qty_col = next((c for c in candidate_cols if c in df_master.columns), None)
-    if qty_col is None:
-        return {}
-
-    out: Dict[str, int] = {}
-    base = df_master[["Material Number", qty_col]].copy()
-    base["Material Number"] = base["Material Number"].astype(str).str.strip()
-    base[qty_col] = pd.to_numeric(base[qty_col], errors="coerce")
-    for _, row in base.iterrows():
-        sku = str(row["Material Number"]).strip()
-        qty = row[qty_col]
-        if not sku or pd.isna(qty):
-            continue
-        qty_i = int(qty)
-        if qty_i > 0:
-            out[sku] = qty_i
-    return out
-
-
-def _qty_per_carton_for_sku(data: Dict[str, pd.DataFrame], sku_val: str) -> int:
-    """
-    Resolve qty_per_carton with DB/master-first strategy.
-    Priority:
-    1) master row columns (Qty Per Carton / Pack Size aliases)
-    2) prebuilt carton_mapping dict
-    """
-    df_m = data.get("master")
-    candidate_cols = [
-        "Qty Per Carton",
-        "Qty_per_Carton",
-        "Qty per Carton",
-        "Pcs per CTN",
-        "Pcs/CTN",
-        "Each per Carton",
-        "Carton Size",
-        "Pack Size",
-        "pack_size",
-    ]
-    if isinstance(df_m, pd.DataFrame) and not df_m.empty and "Material Number" in df_m.columns:
-        m = df_m.copy()
-        m["Material Number"] = m["Material Number"].astype(str).str.strip()
-        row = m[m["Material Number"] == sku_val]
-        if not row.empty:
-            r = row.iloc[0]
-            for col in candidate_cols:
-                if col in m.columns:
-                    q = pd.to_numeric(r.get(col), errors="coerce")
-                    if pd.notna(q) and float(q) > 0:
-                        return int(q)
-
-    carton_mapping = data.get("carton_mapping", {})
-    q = carton_mapping.get(sku_val)
-    if q is not None and int(q) > 0:
-        return int(q)
-    raise ValueError(f"Qty Per Carton wajib diisi untuk SKU {sku_val}.")
 
 
 def _backend_root() -> str:
@@ -110,8 +43,7 @@ def load_all_data(file_path: Optional[str] = None) -> Dict[str, pd.DataFrame]:
     df_s["PromoType"] = "NONE"
     df_s["PromoDiscountPct"] = df_s["Promo Discount"]
 
-    carton_mapping = _build_carton_mapping(df_m)
-    return {"sales": df_s, "master": df_m, "carton_mapping": carton_mapping}
+    return {"sales": df_s, "master": df_m, "carton_mapping": {}}
 
 
 def get_sku_list(
@@ -119,25 +51,12 @@ def get_sku_list(
     show: bool = False,
     strict_carton_mapping: bool = True,
 ) -> pd.DataFrame:
+    _ = strict_carton_mapping  # deprecated; kept for call-site compatibility
     df_s = data["sales"].copy()
     df_m = data["master"].copy()
-    carton_mapping = data.get("carton_mapping", {})
     df_s["ID Item"] = df_s["ID Item"].astype(str)
     df_m["Material Number"] = df_m["Material Number"].astype(str)
-    missing = sorted(set(df_s["ID Item"].unique()) - set(carton_mapping.keys()))
-    if missing and strict_carton_mapping:
-        raise ValueError(
-            "Qty Per Carton wajib tersedia untuk semua SKU. "
-            f"SKU tanpa mapping: {', '.join(missing[:10])}"
-            + (" ..." if len(missing) > 10 else "")
-        )
-    default_qty = 1
-    df_s["qty_per_carton"] = (
-        df_s["ID Item"].map(lambda x: carton_mapping.get(str(x).strip(), default_qty)).astype(float)
-    )
-    df_s["qty_per_carton"] = df_s["qty_per_carton"].replace(0, 1)
-    # Listing metrics should follow carton unit (CTN) consistently.
-    df_s["Demand "] = pd.to_numeric(df_s["Demand "], errors="coerce").fillna(0) / df_s["qty_per_carton"]
+    df_s["Demand "] = pd.to_numeric(df_s["Demand "], errors="coerce").fillna(0)
     grp = df_s.groupby("ID Item", as_index=False).agg(
         Grup=("Nama Item", "first"),
         Tgl_Mulai=("Date", "min"),
@@ -200,16 +119,12 @@ def get_sku_demand(
     d["PromoDiscountPct"] = d["PromoDiscountPct"].fillna(0.0)
     d["PromoType"] = d["PromoType"].fillna("NONE")
     d["Price"] = d["Price"].ffill()
-    qty_per_carton = _qty_per_carton_for_sku(data, sku_val)
-    if qty_per_carton <= 0:
-        raise ValueError(f"Qty Per Carton tidak valid untuk SKU {sku}: {qty_per_carton}")
-    d["Demand"] = d["Demand"].astype(float) / qty_per_carton
+    d["Demand"] = d["Demand"].astype(float)
 
     if verbose:
         print(
             f"✅ SKU {sku} | {d['Date'].min().date()} s/d {d['Date'].max().date()} | "
-            f"{len(d)} hari | demand total: {d['Demand'].sum():,.3f} CTN "
-            f"({qty_per_carton} Pcs/CTN)"
+            f"{len(d)} hari | demand total: {d['Demand'].sum():,.3f} (PCS)"
         )
     return d.reset_index(drop=True)
 
@@ -224,35 +139,29 @@ def get_sku_params(data: Dict[str, pd.DataFrame], sku: _SKU_KEY) -> Dict[str, An
     row = row.iloc[0]
 
     dlt = int(row["Lead Time_Days"])
-    qty_per_carton = _qty_per_carton_for_sku(data, sku_val)
-    if qty_per_carton <= 0:
-        raise ValueError(f"Qty Per Carton tidak valid untuk SKU {sku}: {qty_per_carton}")
-
     price_ea = float(row["Sales Price"])
     buy_ea = float(row["Purchase Price"])
-    price_ctn = price_ea * qty_per_carton
-    buy_ctn = buy_ea * qty_per_carton
-    hold_day_ctn = float(row["Holding Cost Rate/day"]) * price_ctn
-    penalty_ctn = float(row["Lost Sale Rate/Each"]) * price_ctn
+    hold_day = float(row["Holding Cost Rate/day"]) * price_ea
+    penalty_unit = float(row["Lost Sale Rate/Each"]) * price_ea
     moq_each = int(row["MOQ"]) if "MOQ" in row and not pd.isna(row["MOQ"]) else 1
-    moq_ctn = max(1, int(math.ceil(moq_each / qty_per_carton)))
+    moq_each = max(1, moq_each)
 
+    unit_raw = str(row.get("Unit", "EA") or "EA").strip().upper()
     return {
         "sku": int(sku_val) if str(sku_val).isdigit() else sku_val,
         "group": str(row["Material Group"]),
+        "unit": unit_raw,
         "dlt": dlt,
         "lt_std": round(dlt * 0.10, 2),
-        "qty_per_carton": qty_per_carton,
-        "pack_size": 1,
         "moq_each": moq_each,
         "price_ea": round(price_ea, 2),
-        "price_ctn": round(price_ctn, 2),
-        "purchase_price": round(buy_ctn, 2),
+        "price_ctn": round(price_ea, 2),
+        "purchase_price": round(buy_ea, 2),
         "margin_pct": round((price_ea - buy_ea) / price_ea * 100, 1) if price_ea > 0 else 0.0,
         "hold_rate_annual": round(float(row["Holding Cost Rate/day"]) * 365, 4),
-        "hold_cost_per_unit_day": round(hold_day_ctn, 6),
+        "hold_cost_per_unit_day": round(hold_day, 6),
         "lost_sale_rate": float(row["Lost Sale Rate/Each"]),
-        "penalty_per_unit": round(penalty_ctn, 2),
+        "penalty_per_unit": round(penalty_unit, 2),
         "order_cost": float(row["Logistic Cost/Order"]),
-        "moq": moq_ctn,
+        "moq": moq_each,
     }

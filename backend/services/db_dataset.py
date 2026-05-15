@@ -22,6 +22,7 @@ def _master_row_dict(m: SKUMaster) -> Dict[str, Any]:
     log_cost = float(m.logistic_cost_order or 0)
     return {
         "Material Number": sku,
+        "Material Description": str(m.nama_item or ""),
         "Lead Time_Days": int(m.lead_time or 0),
         "Sales Price": harga,
         "Purchase Price": purch,
@@ -29,9 +30,8 @@ def _master_row_dict(m: SKUMaster) -> Dict[str, Any]:
         "Lost Sale Rate/Each": lost,
         "Logistic Cost/Order": log_cost,
         "MOQ": int(m.moq or 1),
-        # pack_size in master acts as carton mapping (pcs per carton) when provided.
-        "Qty Per Carton": int(m.pack_size or 1),
         "Material Group": str(m.group or m.nama_item or ""),
+        "Unit": str(m.unit or "pcs"),
     }
 
 
@@ -64,6 +64,7 @@ def load_sales_master_frames_from_db(db: Session) -> Dict[str, pd.DataFrame]:
             "master": pd.DataFrame(
                 columns=[
                     "Material Number",
+                    "Material Description",
                     "Lead Time_Days",
                     "Sales Price",
                     "Purchase Price",
@@ -71,8 +72,8 @@ def load_sales_master_frames_from_db(db: Session) -> Dict[str, pd.DataFrame]:
                     "Lost Sale Rate/Each",
                     "Logistic Cost/Order",
                     "MOQ",
-                    "Qty Per Carton",
                     "Material Group",
+                    "Unit",
                 ]
             ),
             "carton_mapping": {},
@@ -80,11 +81,6 @@ def load_sales_master_frames_from_db(db: Session) -> Dict[str, pd.DataFrame]:
 
     master_df = pd.DataFrame([_master_row_dict(m) for m in masters])
     master_df["Material Number"] = master_df["Material Number"].astype(str)
-    carton_mapping = {
-        str(m.sku).strip(): int(m.pack_size or 1)
-        for m in masters
-        if int(m.pack_size or 0) > 0
-    }
 
     sku_set = {str(m.sku).strip() for m in masters}
 
@@ -119,4 +115,4 @@ def load_sales_master_frames_from_db(db: Session) -> Dict[str, pd.DataFrame]:
     if not sales_df.empty:
         sales_df["Date"] = pd.to_datetime(sales_df["Date"])
 
-    return {"sales": sales_df, "master": master_df, "carton_mapping": carton_mapping}
+    return {"sales": sales_df, "master": master_df, "carton_mapping": {}}

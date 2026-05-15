@@ -489,8 +489,15 @@ def run_forecast(df_demand, sku, verbose=True):
     }
 
 
-def build_forecast_series_for_simulation(result_fc, clean: np.ndarray) -> np.ndarray:
-    """Train period: SES in-sample; test: best model (matches notebook RUN 3)."""
+def build_forecast_series_for_simulation(
+    result_fc: dict,
+    clean: np.ndarray,
+    dlt: int = 0,
+) -> np.ndarray:
+    """
+    Notebook RUN 3: SES in-sample for train; best model for test; Holt-Winters extend
+    by DLT days for qualified-demand horizon.
+    """
     best_model = result_fc["best_model"]
     train_size = result_fc["train_size"]
     fc_test = result_fc["predictions"][best_model]
@@ -502,4 +509,8 @@ def build_forecast_series_for_simulation(result_fc, clean: np.ndarray) -> np.nda
         s = alpha_opt * clean[i] + (1 - alpha_opt) * s
     rest = len(clean) - train_size
     fc = np.concatenate([fc_train, fc_test[:rest]])
-    return np.maximum(fc[: len(clean)], 0)
+    fc = np.maximum(fc[: len(clean)], 0)
+    if dlt > 0:
+        fc_extend = np.maximum(forecast_holtwinters(clean, int(dlt), season=7), 0)
+        fc = np.concatenate([fc, fc_extend])
+    return fc

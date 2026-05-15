@@ -3,35 +3,70 @@ Master SKU + demand upload — feeds analytics (DB-backed dataset).
 """
 from __future__ import annotations
 
-import re
-from datetime import date, datetime
+from collections import Counter
+from datetime import date
 from io import BytesIO
 from typing import Any, Optional
 
 import pandas as pd
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from database import get_db
 from models import DailyRecord, SKUMaster
+from services.master_upload_parse import (
+    DEMAND_EXCEL_COLUMNS,
+    MASTER_SKU_EXCEL_COLUMNS,
+    _coerce_demand_upload,
+    _coerce_master_sku_upload,
+    _first_existing_col,
+    _format_date_dd_mm_yy,
+    _missing_master_columns_message,
+    _normalize_column_map,
+    _parse_date,
+    _parse_master_sku_row,
+    _required_master_column_keys,
+    _sku_key_from_excel,
+    _str_cell,
+    demand_template_sample_rows,
+    master_sku_template_sample_rows,
+    sku_master_row_to_excel,
+)
 
 router = APIRouter(prefix="/api/master", tags=["master"])
 
 
+def _parse_opt_date(s: Optional[str]) -> Optional[date]:
+    if not s or not str(s).strip():
+        return None
+    try:
+        return date.fromisoformat(str(s).strip()[:10])
+    except ValueError:
+        return None
+
+
+async def _read_demand_dataframe(file: UploadFile, raw: bytes) -> pd.DataFrame:
+    fn = (file.filename or "").lower()
+    try:
+        if fn.endswith(".csv"):
+            return pd.read_csv(BytesIO(raw))
+        return pd.read_excel(BytesIO(raw))
+    except Exception as e:
+        raise HTTPException(400, f"Gagal baca file: {e}") from e
+
+
 @router.get("/template/demand")
 def download_demand_template():
+    """Full Data 2 column layout: ID Item; Nama Item; Date; Demand ; …PromoType."""
     df = pd.DataFrame(
-        {
-            "Date": [date(2026, 1, 1), date(2026, 1, 2)],
-            "SKU": ["1000001", "1000001"],
-            "Demand": [120, 95],
-            "Promo_Discount": [0.0, 0.0],
-        }
+        demand_template_sample_rows(),
+        columns=list(DEMAND_EXCEL_COLUMNS),
     )
     buf = BytesIO()
-    df.to_excel(buf, index=False, sheet_name="demand")
+    df.to_excel(buf, index=False, sheet_name="sales")
     buf.seek(0)
     return StreamingResponse(
         buf,
@@ -42,22 +77,10 @@ def download_demand_template():
 
 @router.get("/template/master-sku")
 def download_master_sku_template():
-    df = pd.DataFrame(
-        {
-            "Material Number": [1000001, 1000002],
-            "Material Group": ["FOOD-DRY", "BEVERAGE"],
-            "Lead Time_Days": [3, 5],
-            "Sales Price": [12000, 9000],
-            "Purchase Price": [9000, 7000],
-            "Holding Cost Rate/day": [0.00015, 0.00012],
-            "Lost Sale Rate/Each": [0.15, 0.12],
-            "Logistic Cost/Order": [750000, 750000],
-            "MOQ": [100, 50],
-            "Qty Per Carton": [40, 24],
-        }
-    )
+    """Headers & order = `sku_master` / Data 2: Material Number … Logistic Cost/Order."""
+    df = pd.DataFrame(master_sku_template_sample_rows(), columns=list(MASTER_SKU_EXCEL_COLUMNS))
     buf = BytesIO()
-    df.to_excel(buf, index=False, sheet_name="master_sku")
+    df.to_excel(buf, index=False, sheet_name="sku_master")
     buf.seek(0)
     return StreamingResponse(
         buf,
@@ -66,30 +89,16 @@ def download_master_sku_template():
     )
 
 
+
 @router.get("/export/master-sku")
 def export_master_sku(db: Session = Depends(get_db)):
     rows = db.query(SKUMaster).order_by(SKUMaster.sku).all()
     df = pd.DataFrame(
-        [
-            {
-                "Material Number": r.sku,
-                "Material Group": r.group,
-                "Lead Time_Days": r.lead_time,
-                "Sales Price": r.harga,
-                "Purchase Price": r.purchase_price,
-                "Holding Cost Rate/day": r.holding_cost_rate_day,
-                "Lost Sale Rate/Each": r.lost_sale_rate_each,
-                "Logistic Cost/Order": r.logistic_cost_order,
-                "MOQ": r.moq,
-                "Qty Per Carton": r.pack_size,
-                "Unit": r.unit,
-                "Status": r.status,
-            }
-            for r in rows
-        ]
+        [sku_master_row_to_excel(r) for r in rows],
+        columns=list(MASTER_SKU_EXCEL_COLUMNS),
     )
     buf = BytesIO()
-    df.to_excel(buf, index=False, sheet_name="master_sku")
+    df.to_excel(buf, index=False, sheet_name="sku_master")
     buf.seek(0)
     return StreamingResponse(
         buf,
@@ -101,10 +110,9 @@ def export_master_sku(db: Session = Depends(get_db)):
 class SKUMasterIn(BaseModel):
     sku: str = Field(..., min_length=1, max_length=64)
     nama_item: str = ""
-    unit: str = "ctn"
+    unit: str = "pcs"
     lead_time: int = Field(1, ge=0)
-    moq: int = Field(1, ge=1)
-    pack_size: int = Field(1, ge=1)
+    moq: Optional[int] = Field(default=None, ge=1)
     harga: float = Field(0, ge=0)
     target_sl: float = Field(0.95, ge=0, le=1)
     status: str = "Active"
@@ -113,210 +121,48 @@ class SKUMasterIn(BaseModel):
     holding_cost_rate_day: float = Field(0, ge=0)
     lost_sale_rate_each: float = Field(0, ge=0)
     logistic_cost_order: float = Field(0, ge=0)
+    criticality: Optional[str] = None
+    abc_class: Optional[str] = None
+    xyz_class: Optional[str] = None
+    vendor_type: Optional[str] = None
+    currency: Optional[str] = None
+    holding_cost_day_idr: Optional[float] = Field(default=None, ge=0)
+    penalty_per_unit_idr: Optional[float] = Field(default=None, ge=0)
 
 
-def _parse_date(val: Any) -> date:
-    if isinstance(val, datetime):
-        return val.date()
-    if isinstance(val, date):
-        return val
-    if pd.isna(val):
-        raise ValueError("empty date")
-    return pd.to_datetime(val).date()
-
-
-def _normalize_column_map(df: pd.DataFrame) -> pd.DataFrame:
-    mapping = {}
-    for c in df.columns:
-        key = str(c).strip().lower()
-        key = re.sub(r"\s+", " ", key)
-        mapping[c] = key
-    out = df.rename(columns=mapping)
-    return out
-
-
-def _coerce_demand_upload(df: pd.DataFrame) -> pd.DataFrame:
-    dfn = _normalize_column_map(df)
-    col_date = None
-    for cand in ("date", "tanggal", "tgl", "periode"):
-        if cand in dfn.columns:
-            col_date = cand
-            break
-    col_sku = None
-    for cand in ("sku", "id item", "id_item", "material", "material number", "kode"):
-        if cand in dfn.columns:
-            col_sku = cand
-            break
-    col_dem = None
-    for cand in ("demand", "qty", "quantity", "jumlah", "sales"):
-        if cand in dfn.columns:
-            col_dem = cand
-            break
-    col_promo = None
-    for cand in ("promo discount", "promo_discount", "diskon", "promo"):
-        if cand in dfn.columns:
-            col_promo = cand
-            break
-    if not col_date or not col_sku or not col_dem:
-        raise ValueError(
-            "Kolom wajib tidak ditemukan. Gunakan Date/Tanggal, SKU/ID Item, Demand/Qty "
-            f"(kolom saat ini: {list(dfn.columns)})"
-        )
-    rows = []
-    for _, row in dfn.iterrows():
-        try:
-            dt = _parse_date(row[col_date])
-            sku = str(row[col_sku]).strip()
-            if not sku or sku.lower() == "nan":
-                continue
-            dem = float(pd.to_numeric(row[col_dem], errors="coerce") or 0)
-            promo = 0.0
-            if col_promo:
-                promo = float(pd.to_numeric(row[col_promo], errors="coerce") or 0)
-        except Exception:
-            continue
-        rows.append({"date": dt, "sku": sku, "demand": dem, "promo_discount": promo})
-    if not rows:
-        raise ValueError("Tidak ada baris valid setelah parsing.")
-    return pd.DataFrame(rows)
-
-
-def _coerce_master_sku_upload(df: pd.DataFrame) -> pd.DataFrame:
-    dfn = _normalize_column_map(df)
-    if "qty per carton" not in dfn.columns and "qty_per_carton" not in dfn.columns:
-        raise ValueError("Kolom Qty Per Carton wajib ada untuk mapping carton per SKU.")
-
-    required = {
-        "material number": "material_number",
-        "material group": "material_group",
-        "lead time_days": "lead_time_days",
-        "sales price": "sales_price",
-        "purchase price": "purchase_price",
-        "holding cost rate/day": "holding_cost_rate_day",
-        "lost sale rate/each": "lost_sale_rate_each",
-        "logistic cost/order": "logistic_cost_order",
-        "moq": "moq",
-    }
-    missing = [k for k in required if k not in dfn.columns]
-    if missing:
-        raise ValueError(
-            "Kolom Master SKU tidak lengkap. Wajib: "
-            f"{', '.join(required.keys())}. Missing: {', '.join(missing)}"
-        )
-
-    rows = []
-    for _, row in dfn.iterrows():
-        try:
-            sku = str(int(pd.to_numeric(row["material number"], errors="raise"))).strip()
-            if not sku:
-                continue
-            material_group = str(row["material group"]).strip()
-            lead_time = int(pd.to_numeric(row["lead time_days"], errors="raise"))
-            sales_price = float(pd.to_numeric(row["sales price"], errors="raise"))
-            purchase_price = float(pd.to_numeric(row["purchase price"], errors="raise"))
-            holding_cost_rate_day = float(pd.to_numeric(row["holding cost rate/day"], errors="raise"))
-            lost_sale_rate_each = float(pd.to_numeric(row["lost sale rate/each"], errors="raise"))
-            logistic_cost_order = float(pd.to_numeric(row["logistic cost/order"], errors="raise"))
-            moq = int(pd.to_numeric(row["moq"], errors="raise"))
-            qty_col = (
-                "qty per carton"
-                if "qty per carton" in dfn.columns
-                else ("qty_per_carton" if "qty_per_carton" in dfn.columns else None)
-            )
-            qty_per_carton = int(pd.to_numeric(row[qty_col], errors="coerce") or 1) if qty_col else 1
-            if moq <= 0:
-                continue
-            if qty_per_carton <= 0:
-                qty_per_carton = 1
-        except Exception:
-            continue
-        rows.append(
-            {
-                "sku": sku,
-                "group": material_group,
-                "lead_time": max(0, lead_time),
-                "harga": max(0.0, sales_price),
-                "purchase_price": max(0.0, purchase_price),
-                "holding_cost_rate_day": max(0.0, holding_cost_rate_day),
-                "lost_sale_rate_each": max(0.0, lost_sale_rate_each),
-                "logistic_cost_order": max(0.0, logistic_cost_order),
-                "moq": max(1, moq),
-                "qty_per_carton": max(1, qty_per_carton),
-            }
-        )
-    if not rows:
-        raise ValueError("Tidak ada baris valid setelah parsing Master SKU.")
-    return pd.DataFrame(rows)
+def _effective_moq(m: Optional[int]) -> int:
+    if m is None or m < 1:
+        return 1
+    return int(m)
 
 
 def _validate_master_sku_upload(df: pd.DataFrame) -> dict[str, Any]:
     dfn = _normalize_column_map(df)
-    required = [
-        "material number",
-        "material group",
-        "lead time_days",
-        "sales price",
-        "purchase price",
-        "holding cost rate/day",
-        "lost sale rate/each",
-        "logistic cost/order",
-        "moq",
-        "qty per carton",
-    ]
-    if "qty per carton" not in dfn.columns and "qty_per_carton" in dfn.columns:
-        dfn = dfn.rename(columns={"qty_per_carton": "qty per carton"})
+    required = _required_master_column_keys()
     missing = [k for k in required if k not in dfn.columns]
     if missing:
+        msg = _missing_master_columns_message(missing)
         return {
             "ok": False,
-            "error": f"Missing columns: {', '.join(missing)}",
+            "error": msg,
             "total_rows": len(dfn),
             "valid_rows": 0,
             "error_rows": len(dfn),
-            "errors": [{"row": None, "message": f"Missing columns: {', '.join(missing)}"}],
+            "errors": [{"row": None, "message": msg}],
             "preview": [],
+            "expected_columns": list(MASTER_SKU_EXCEL_COLUMNS),
         }
 
+    col_status = _first_existing_col(dfn, ("status",))
     valid = []
     errors = []
     for idx, row in dfn.iterrows():
         row_no = int(idx) + 2
         try:
-            sku = str(int(pd.to_numeric(row["material number"], errors="raise"))).strip()
-            group = str(row["material group"]).strip()
-            lead_time = int(pd.to_numeric(row["lead time_days"], errors="raise"))
-            sales_price = float(pd.to_numeric(row["sales price"], errors="raise"))
-            purchase_price = float(pd.to_numeric(row["purchase price"], errors="raise"))
-            holding = float(pd.to_numeric(row["holding cost rate/day"], errors="raise"))
-            lost = float(pd.to_numeric(row["lost sale rate/each"], errors="raise"))
-            log_cost = float(pd.to_numeric(row["logistic cost/order"], errors="raise"))
-            moq = int(pd.to_numeric(row["moq"], errors="raise"))
-            qty_col = (
-                "qty per carton"
-                if "qty per carton" in dfn.columns
-                else ("qty_per_carton" if "qty_per_carton" in dfn.columns else None)
-            )
-            qty_per_carton = int(pd.to_numeric(row[qty_col], errors="coerce") or 1) if qty_col else 1
-            if not sku:
-                raise ValueError("Material Number kosong")
-            if moq <= 0:
-                raise ValueError("MOQ harus > 0")
-            if qty_per_carton <= 0:
-                raise ValueError("Qty Per Carton harus > 0")
-            valid.append(
-                {
-                    "sku": sku,
-                    "group": group,
-                    "lead_time": max(0, lead_time),
-                    "sales_price": max(0.0, sales_price),
-                    "purchase_price": max(0.0, purchase_price),
-                    "holding_cost_rate_day": max(0.0, holding),
-                    "lost_sale_rate_each": max(0.0, lost),
-                    "logistic_cost_order": max(0.0, log_cost),
-                    "moq": max(1, moq),
-                    "qty_per_carton": max(1, qty_per_carton),
-                }
-            )
+            parsed = _parse_master_sku_row(row)
+            if col_status:
+                parsed["status"] = _str_cell(row, col_status, "Active") or "Active"
+            valid.append(parsed)
         except Exception as e:
             errors.append({"row": row_no, "message": str(e)})
 
@@ -327,6 +173,7 @@ def _validate_master_sku_upload(df: pd.DataFrame) -> dict[str, Any]:
         "error_rows": len(errors),
         "errors": errors[:50],
         "preview": valid[:20],
+        "expected_columns": list(MASTER_SKU_EXCEL_COLUMNS),
     }
 
 
@@ -335,7 +182,20 @@ def _validate_demand_upload(df: pd.DataFrame, db: Session) -> dict[str, Any]:
     col_date = next((c for c in ("date", "tanggal", "tgl", "periode") if c in dfn.columns), None)
     col_sku = next((c for c in ("sku", "id item", "id_item", "material", "material number", "kode") if c in dfn.columns), None)
     col_dem = next((c for c in ("demand", "qty", "quantity", "jumlah", "sales") if c in dfn.columns), None)
-    col_promo = next((c for c in ("promo discount", "promo_discount", "diskon", "promo") if c in dfn.columns), None)
+    col_promo = next(
+        (
+            c
+            for c in (
+                "promo discount",
+                "promo_discount",
+                "promodiscountpct",
+                "diskon",
+                "promo",
+            )
+            if c in dfn.columns
+        ),
+        None,
+    )
     if not col_date or not col_sku or not col_dem:
         return {
             "ok": False,
@@ -345,6 +205,8 @@ def _validate_demand_upload(df: pd.DataFrame, db: Session) -> dict[str, Any]:
             "error_rows": len(dfn),
             "errors": [{"row": None, "message": "Need Date, SKU, Demand"}],
             "preview": [],
+            "unique_skus": 0,
+            "duplicate_rows_in_file": 0,
         }
 
     valid = []
@@ -354,7 +216,7 @@ def _validate_demand_upload(df: pd.DataFrame, db: Session) -> dict[str, Any]:
         row_no = int(idx) + 2
         try:
             dt = _parse_date(row[col_date])
-            sku = str(row[col_sku]).strip()
+            sku = _sku_key_from_excel(row[col_sku])
             if not sku or sku.lower() == "nan":
                 raise ValueError("SKU kosong")
             exists = sku_cache.get(sku)
@@ -366,10 +228,25 @@ def _validate_demand_upload(df: pd.DataFrame, db: Session) -> dict[str, Any]:
             demand = float(pd.to_numeric(row[col_dem], errors="raise"))
             promo = 0.0
             if col_promo:
-                promo = float(pd.to_numeric(row[col_promo], errors="coerce") or 0)
-            valid.append({"date": str(dt), "sku": sku, "demand": demand, "promo_discount": promo})
+                raw_promo = pd.to_numeric(row[col_promo], errors="coerce")
+                if pd.notna(raw_promo):
+                    promo = float(raw_promo)
+                    if col_promo == "promodiscountpct" and promo > 1.0:
+                        promo = promo / 100.0
+            valid.append(
+                {
+                    "date": _format_date_dd_mm_yy(dt),
+                    "sku": sku,
+                    "demand": demand,
+                    "promo_discount": promo,
+                }
+            )
         except Exception as e:
             errors.append({"row": row_no, "message": str(e)})
+
+    unique_skus = len({v["sku"] for v in valid})
+    pair_counts = Counter((v["date"], v["sku"]) for v in valid)
+    duplicate_rows_in_file = sum(c - 1 for c in pair_counts.values() if c > 1)
 
     return {
         "ok": True,
@@ -378,7 +255,26 @@ def _validate_demand_upload(df: pd.DataFrame, db: Session) -> dict[str, Any]:
         "error_rows": len(errors),
         "errors": errors[:50],
         "preview": valid[:20],
+        "unique_skus": unique_skus,
+        "duplicate_rows_in_file": duplicate_rows_in_file,
     }
+
+
+@router.get("/sku-groups")
+def list_sku_groups(db: Session = Depends(get_db)):
+    """Distinct Material Group values from sku_master (for form dropdowns)."""
+    groups = [
+        g[0]
+        for g in (
+            db.query(SKUMaster.group)
+            .filter(SKUMaster.group.isnot(None), SKUMaster.group != "")
+            .distinct()
+            .order_by(SKUMaster.group)
+            .all()
+        )
+        if g[0]
+    ]
+    return {"groups": groups}
 
 
 @router.get("/skus")
@@ -392,7 +288,6 @@ def list_master_skus(db: Session = Depends(get_db)):
                 "unit": r.unit,
                 "lead_time": r.lead_time,
                 "moq": r.moq,
-                "pack_size": r.pack_size,
                 "harga": r.harga,
                 "target_sl": r.target_sl,
                 "status": r.status,
@@ -401,6 +296,13 @@ def list_master_skus(db: Session = Depends(get_db)):
                 "holding_cost_rate_day": r.holding_cost_rate_day,
                 "lost_sale_rate_each": r.lost_sale_rate_each,
                 "logistic_cost_order": r.logistic_cost_order,
+                "criticality": getattr(r, "criticality", None),
+                "abc_class": getattr(r, "abc_class", None),
+                "xyz_class": getattr(r, "xyz_class", None),
+                "vendor_type": getattr(r, "vendor_type", None),
+                "currency": getattr(r, "currency", None),
+                "holding_cost_day_idr": getattr(r, "holding_cost_day_idr", None),
+                "penalty_per_unit_idr": getattr(r, "penalty_per_unit_idr", None),
             }
             for r in rows
         ]
@@ -410,12 +312,15 @@ def list_master_skus(db: Session = Depends(get_db)):
 @router.post("/skus")
 def create_or_update_sku(body: SKUMasterIn, db: Session = Depends(get_db)):
     sku = body.sku.strip()
+    moq_v = _effective_moq(body.moq)
     existing = db.query(SKUMaster).filter(SKUMaster.sku == sku).first()
     if existing:
-        for k, v in body.model_dump().items():
-            if k == "sku":
-                continue
+        data = body.model_dump()
+        data.pop("sku", None)
+        data["moq"] = moq_v
+        for k, v in data.items():
             setattr(existing, k, v)
+        existing.pack_size = 1
         db.commit()
         db.refresh(existing)
         return {"ok": True, "sku": sku, "action": "updated"}
@@ -424,8 +329,8 @@ def create_or_update_sku(body: SKUMasterIn, db: Session = Depends(get_db)):
         nama_item=body.nama_item,
         unit=body.unit,
         lead_time=body.lead_time,
-        moq=body.moq,
-        pack_size=body.pack_size,
+        moq=moq_v,
+        pack_size=1,
         harga=body.harga,
         target_sl=body.target_sl,
         status=body.status,
@@ -434,6 +339,13 @@ def create_or_update_sku(body: SKUMasterIn, db: Session = Depends(get_db)):
         holding_cost_rate_day=body.holding_cost_rate_day,
         lost_sale_rate_each=body.lost_sale_rate_each,
         logistic_cost_order=body.logistic_cost_order,
+        criticality=body.criticality,
+        abc_class=body.abc_class,
+        xyz_class=body.xyz_class,
+        vendor_type=body.vendor_type,
+        currency=body.currency,
+        holding_cost_day_idr=body.holding_cost_day_idr,
+        penalty_per_unit_idr=body.penalty_per_unit_idr,
     )
     db.add(row)
     db.commit()
@@ -480,7 +392,9 @@ async def upload_master_sku(
         existing = db.query(SKUMaster).filter(SKUMaster.sku == sku).first()
         payload = {
             "group": row["group"],
-            "nama_item": row["group"],  # fallback: no item name in provided columns
+            "nama_item": row.get("nama_item") or row["group"],
+            "unit": row.get("unit") or "EA",
+            "status": row.get("status") or "Active",
             "lead_time": int(row["lead_time"]),
             "harga": float(row["harga"]),
             "purchase_price": float(row["purchase_price"]),
@@ -488,8 +402,14 @@ async def upload_master_sku(
             "lost_sale_rate_each": float(row["lost_sale_rate_each"]),
             "logistic_cost_order": float(row["logistic_cost_order"]),
             "moq": int(row["moq"]),
-            "pack_size": int(row["qty_per_carton"]),
-            "status": "Active",
+            "pack_size": 1,
+            "criticality": row.get("criticality"),
+            "abc_class": row.get("abc_class"),
+            "xyz_class": row.get("xyz_class"),
+            "vendor_type": row.get("vendor_type"),
+            "currency": row.get("currency"),
+            "holding_cost_day_idr": row.get("holding_cost_day_idr"),
+            "penalty_per_unit_idr": row.get("penalty_per_unit_idr"),
         }
         if existing:
             for k, v in payload.items():
@@ -499,7 +419,6 @@ async def upload_master_sku(
             db.add(
                 SKUMaster(
                     sku=sku,
-                    unit="ctn",
                     target_sl=0.95,
                     **payload,
                 )
@@ -517,35 +436,103 @@ async def validate_demand(
     if not file.filename:
         raise HTTPException(400, "File kosong.")
     raw = await file.read()
-    try:
-        df = pd.read_excel(BytesIO(raw))
-    except Exception as e:
-        raise HTTPException(400, f"Gagal baca Excel: {e}") from e
+    df = await _read_demand_dataframe(file, raw)
     return _validate_demand_upload(df, db)
+
+
+@router.get("/demand/summary")
+def demand_summary(db: Session = Depends(get_db)):
+    total = int(db.query(func.count(DailyRecord.id)).scalar() or 0)
+    dmin, dmax = db.query(func.min(DailyRecord.date), func.max(DailyRecord.date)).one()
+    days_span: Optional[int] = None
+    if dmin is not None and dmax is not None:
+        days_span = (dmax - dmin).days + 1
+    sku_with_demand = int(db.query(func.count(func.distinct(DailyRecord.sku))).scalar() or 0)
+    sku_active_master = int(
+        db.query(func.count(SKUMaster.sku))
+        .filter(
+            or_(
+                SKUMaster.status.is_(None),
+                SKUMaster.status == "",
+                SKUMaster.status == "Active",
+            )
+        )
+        .scalar()
+        or 0
+    )
+    demand_groups = [
+        g[0]
+        for g in (
+            db.query(SKUMaster.group)
+            .join(DailyRecord, DailyRecord.sku == SKUMaster.sku)
+            .filter(SKUMaster.group.isnot(None), SKUMaster.group != "")
+            .distinct()
+            .order_by(SKUMaster.group)
+            .all()
+        )
+        if g[0]
+    ]
+    return {
+        "total_records": total,
+        "date_min": dmin.isoformat() if dmin else None,
+        "date_max": dmax.isoformat() if dmax else None,
+        "days_span": days_span,
+        "sku_with_demand": sku_with_demand,
+        "sku_active_master": sku_active_master,
+        "demand_groups": demand_groups,
+    }
 
 
 @router.get("/demand")
 def list_demand(
     db: Session = Depends(get_db),
     limit: int = 100,
+    offset: int = 0,
     sku: Optional[str] = None,
+    search: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    group: Optional[str] = None,
+    promo_only: bool = False,
 ):
     """
-    List uploaded demand rows from DB.
-    Used by `/master/demand` UI to show "daftar list demand".
+    List uploaded demand rows from DB (newest first).
     """
     limit = max(1, min(int(limit), 500))
-    q = (
-        db.query(DailyRecord, SKUMaster.nama_item, SKUMaster.group)
-        .join(SKUMaster, DailyRecord.sku == SKUMaster.sku)
-        .order_by(DailyRecord.date.desc(), DailyRecord.id.desc())
-        .limit(limit)
+    offset = max(0, int(offset))
+    df_from = _parse_opt_date(date_from)
+    df_to = _parse_opt_date(date_to)
+
+    base = db.query(DailyRecord, SKUMaster.nama_item, SKUMaster.group).join(
+        SKUMaster, DailyRecord.sku == SKUMaster.sku
     )
     if sku:
-        sku_s = str(sku).strip()
-        q = q.filter(DailyRecord.sku == sku_s)
+        base = base.filter(DailyRecord.sku == str(sku).strip())
+    if search and str(search).strip():
+        term = f"%{str(search).strip()}%"
+        base = base.filter(
+            or_(
+                DailyRecord.sku.like(term),
+                SKUMaster.nama_item.like(term),
+                SKUMaster.group.like(term),
+            )
+        )
+    if group and str(group).strip() and str(group).strip() != "__all__":
+        base = base.filter(SKUMaster.group == str(group).strip())
+    if df_from is not None:
+        base = base.filter(DailyRecord.date >= df_from)
+    if df_to is not None:
+        base = base.filter(DailyRecord.date <= df_to)
+    if promo_only:
+        base = base.filter(
+            DailyRecord.promo_discount.isnot(None),
+            DailyRecord.promo_discount > 0,
+        )
 
-    rows = q.all()
+    ordered = base.order_by(DailyRecord.date.desc(), DailyRecord.id.desc())
+    total = int(ordered.count())
+    page_rows = ordered.offset(offset).limit(limit).all()
+
     return {
         "rows": [
             {
@@ -557,8 +544,9 @@ def list_demand(
                 "demand": float(dr.demand or 0),
                 "promo_discount": float(dr.promo_discount or 0),
             }
-            for (dr, nama_item, grp) in rows
-        ]
+            for (dr, nama_item, grp) in page_rows
+        ],
+        "total": total,
     }
 
 
@@ -572,7 +560,7 @@ def export_demand(db: Session = Depends(get_db)):
     df = pd.DataFrame(
         [
             {
-                "Date": r.date.isoformat() if r.date else None,
+                "Date": _format_date_dd_mm_yy(r.date) if r.date else None,
                 "SKU": r.sku,
                 "Demand": float(r.demand or 0),
                 "Promo_Discount": float(r.promo_discount or 0),
@@ -593,22 +581,23 @@ def export_demand(db: Session = Depends(get_db)):
 @router.post("/upload/demand")
 async def upload_demand(
     file: UploadFile = File(...),
+    mode: str = Form("upsert"),
     db: Session = Depends(get_db),
 ):
     if not file.filename:
         raise HTTPException(400, "File kosong.")
     raw = await file.read()
-    try:
-        df = pd.read_excel(BytesIO(raw))
-    except Exception as e:
-        raise HTTPException(400, f"Gagal baca Excel: {e}") from e
+    df = await _read_demand_dataframe(file, raw)
     try:
         tidy = _coerce_demand_upload(df)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
 
+    insert_only = str(mode).strip().lower() in ("insert_only", "insert", "tambah")
+
     inserted = 0
     updated = 0
+    skipped = 0
     for _, row in tidy.iterrows():
         sku = str(row["sku"]).strip()
         master = db.query(SKUMaster).filter(SKUMaster.sku == sku).first()
@@ -626,6 +615,9 @@ async def upload_demand(
             .first()
         )
         if rec:
+            if insert_only:
+                skipped += 1
+                continue
             rec.demand = float(row["demand"])
             rec.promo_discount = float(row.get("promo_discount", 0) or 0)
             updated += 1
@@ -640,4 +632,10 @@ async def upload_demand(
             )
             inserted += 1
     db.commit()
-    return {"ok": True, "inserted": inserted, "updated": updated, "rows_in_file": len(tidy)}
+    return {
+        "ok": True,
+        "inserted": inserted,
+        "updated": updated,
+        "skipped": skipped,
+        "rows_in_file": len(tidy),
+    }

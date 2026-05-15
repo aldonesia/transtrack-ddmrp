@@ -47,9 +47,11 @@ def run_buffer_optimization(
     if not clf:
         raise ValueError("Demand series empty — cannot classify SKU.")
 
-    fc = build_forecast_series_for_simulation(result_fc, clean)
+    dlt = int(params["dlt"])
+    fc = build_forecast_series_for_simulation(result_fc, clean, dlt=dlt)
     dates = df_raw["Date"].reset_index(drop=True)
-    moq = params["moq"]
+    moq = int(params["moq"])
+    unit = str(params.get("unit") or "EA").upper()
 
     def sim_fn(vf, ltf):
         return simulate_ddmrp(
@@ -58,13 +60,13 @@ def run_buffer_optimization(
             dates,
             vf,
             ltf,
-            params["dlt"],
+            dlt,
             moq,
-            params["price_ctn"],
+            params["price_ea"],
             params["hold_cost_per_unit_day"],
             params["order_cost"],
             params["penalty_per_unit"],
-            lt_std=0.0,
+            lt_std=float(params.get("lt_std") or 0.0),
             verbose=False,
         )
 
@@ -91,8 +93,7 @@ def run_buffer_optimization(
 
     return {
         "sku": sku_s,
-        "unit": "CTN",
-        "qty_per_carton": params.get("qty_per_carton"),
+        "unit": unit,
         "classification": clf,
         "forecast_best_model": result_fc["best_model"],
         "forecast_metrics": result_fc["best_metrics"],

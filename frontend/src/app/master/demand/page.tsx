@@ -1,45 +1,210 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   demandTemplateUrl,
   exportDemandUrl,
+  getDemandSummary,
   listDemandRows,
-  validateDemandExcel,
   uploadDemandExcel,
+  validateDemandExcel,
   type DemandRow,
+  type DemandSummary,
 } from "@/lib/api";
 
+const PAGE_SIZE = 10;
+const LAST_UPLOAD_KEY = "ddmrp_demand_last_upload";
+
+type LastUploadMeta = {
+  at: string;
+  fileName: string;
+  rows: number;
+  inserted: number;
+  updated: number;
+  skipped?: number;
+  status: string;
+};
+
+type DemandValidation = {
+  ok?: boolean;
+  error?: string;
+  total_rows?: number;
+  valid_rows?: number;
+  error_rows?: number;
+  unique_skus?: number;
+  duplicate_rows_in_file?: number;
+  errors?: Array<{ row?: unknown; message?: unknown }>;
+  preview?: unknown[];
+};
+
+function groupBadgeClass(group: string): string {
+  const g = group.trim().toLowerCase();
+  const palettes = [
+    "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
+    "bg-sky-500/20 text-sky-300 border-sky-500/40",
+    "bg-amber-500/20 text-amber-300 border-amber-500/40",
+    "bg-rose-500/20 text-rose-300 border-rose-500/40",
+    "bg-violet-500/20 text-violet-300 border-violet-500/40",
+    "bg-orange-500/20 text-orange-300 border-orange-500/40",
+  ];
+  let h = 0;
+  for (let i = 0; i < g.length; i++) h = (h * 31 + g.charCodeAt(i)) >>> 0;
+  return palettes[h % palettes.length];
+}
+
+function formatIntId(n: number): string {
+  return Math.round(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
+}
+
+function formatMonthYear(d: Date): string {
+  return d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+}
+
+function formatDateShort(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso.includes("T") ? iso : `${iso}T12:00:00`);
+  if (Number.isNaN(d.getTime())) {
+    const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(iso.trim());
+    if (m) return iso.trim();
+    return iso;
+  }
+  const dd = String(d.getDate()).padStart(2, "0");
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const yy = String(d.getFullYear() % 100).padStart(2, "0");
+  return `${dd}/${mm}/${yy}`;
+}
+
+function daysAgoLabel(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso + "T12:00:00");
+  if (Number.isNaN(d.getTime())) return "";
+  const diff = Date.now() - d.getTime();
+  const days = Math.floor(diff / (86400 * 1000));
+  if (days < 0) return "";
+  if (days === 0) return "today";
+  return `${days} days ago`;
+}
+
+function readLastUpload(): LastUploadMeta | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(LAST_UPLOAD_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as LastUploadMeta;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastUpload(m: LastUploadMeta) {
+  try {
+    localStorage.setItem(LAST_UPLOAD_KEY, JSON.stringify(m));
+  } catch {
+    /* ignore */
+  }
+}
+
+type DatePreset = "all" | "7d" | "30d" | "90d";
+
 export default function MasterDemandPage() {
+  const [summary, setSummary] = useState<DemandSummary | null>(null);
+  const [rows, setRows] = useState<DemandRow[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [listBusy, setListBusy] = useState(false);
+
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [datePreset, setDatePreset] = useState<DatePreset>("all");
+  const dateRange = useMemo(() => {
+    if (datePreset === "all") return {};
+    const end = new Date();
+    const start = new Date();
+    const back = datePreset === "7d" ? 7 : datePreset === "30d" ? 30 : 90;
+    start.setDate(end.getDate() - back);
+    return {
+      from: start.toISOString().slice(0, 10),
+      to: end.toISOString().slice(0, 10),
+    };
+  }, [datePreset]);
+  const [groupFilter, setGroupFilter] = useState("__all__");
+  const [promoOnly, setPromoOnly] = useState(false);
+
   const [uploadBusy, setUploadBusy] = useState(false);
   const [file, setFile] = useState<File | null>(null);
-  const [validation, setValidation] = useState<Record<string, unknown> | null>(null);
+  const [validation, setValidation] = useState<DemandValidation | null>(null);
+  const [saveMode, setSaveMode] = useState<"insert_only" | "upsert">("insert_only");
+  const [lastUpload, setLastUpload] = useState<LastUploadMeta | null>(null);
+
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [rows, setRows] = useState<DemandRow[]>([]);
-  const [listBusy, setListBusy] = useState(false);
-  const [lastUploadSummary, setLastUploadSummary] = useState<string | null>(null);
   const [lastExportAt, setLastExportAt] = useState<string | null>(null);
 
-  const reloadList = async () => {
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  const loadSummary = useCallback(async () => {
+    try {
+      const s = await getDemandSummary();
+      setSummary(s);
+    } catch {
+      setSummary(null);
+    }
+  }, []);
+
+  const loadTable = useCallback(async () => {
     setListBusy(true);
     try {
-      const r = await listDemandRows({ limit: 100 });
+      const offset = (page - 1) * PAGE_SIZE;
+      const r = await listDemandRows({
+        limit: PAGE_SIZE,
+        offset,
+        search: debouncedSearch || undefined,
+        dateFrom: dateRange.from,
+        dateTo: dateRange.to,
+        group: groupFilter !== "__all__" ? groupFilter : undefined,
+        promoOnly,
+      });
       setRows(r.rows ?? []);
+      setTotal(r.total ?? 0);
     } catch (e) {
-      // Keep UI non-blocking; upload can still work.
-      // eslint-disable-next-line no-console
-      console.error(e);
+      setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setListBusy(false);
     }
-  };
+  }, [page, debouncedSearch, dateRange.from, dateRange.to, groupFilter, promoOnly]);
 
   useEffect(() => {
-    void reloadList();
+    setLastUpload(readLastUpload());
   }, []);
 
-  const onValidate = async (f: File | null) => {
+  useEffect(() => {
+    void loadSummary();
+  }, [loadSummary]);
+
+  useEffect(() => {
+    void loadTable();
+  }, [loadTable]);
+
+  useEffect(() => {
+    setPage(1);
+  }, [debouncedSearch, datePreset, groupFilter, promoOnly]);
+
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+
+  useEffect(() => {
+    if (page > pageCount) setPage(pageCount);
+  }, [page, pageCount]);
+
+  const maxDemandOnPage = useMemo(
+    () => Math.max(1, ...rows.map((r) => Number(r.demand) || 0)),
+    [rows]
+  );
+
+  const onPickFile = async (f: File | null) => {
     if (!f) return;
     setFile(f);
     setValidation(null);
@@ -47,14 +212,19 @@ export default function MasterDemandPage() {
     setMsg(null);
     setUploadBusy(true);
     try {
-      const r = await validateDemandExcel(f);
+      const r = (await validateDemandExcel(f)) as DemandValidation;
       setValidation(r);
-      setMsg(`Validasi selesai. valid=${String(r.valid_rows ?? 0)} error=${String(r.error_rows ?? 0)}`);
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setUploadBusy(false);
     }
+  };
+
+  const onDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const f = e.dataTransfer.files?.[0];
+    if (f) void onPickFile(f);
   };
 
   const onCommit = async () => {
@@ -66,14 +236,27 @@ export default function MasterDemandPage() {
     setMsg(null);
     setUploadBusy(true);
     try {
-      const r = await uploadDemandExcel(file);
-      setMsg(`Upload demand: +${r.inserted} baru, ${r.updated} diperbarui (${r.rows_in_file} baris).`);
-      setLastUploadSummary(
-        `Upload terakhir ${new Date().toLocaleString()} · inserted=${r.inserted}, updated=${r.updated}, rows=${r.rows_in_file}`
+      const r = await uploadDemandExcel(file, { mode: saveMode });
+      const meta: LastUploadMeta = {
+        at: new Date().toISOString(),
+        fileName: file.name,
+        rows: r.rows_in_file,
+        inserted: r.inserted,
+        updated: r.updated,
+        skipped: r.skipped,
+        status: "Success",
+      };
+      writeLastUpload(meta);
+      setLastUpload(meta);
+      setMsg(
+        `Demand upload: +${r.inserted} new, ${r.updated} updated` +
+          (r.skipped ? `, ${r.skipped} skipped` : "") +
+          ` (${r.rows_in_file} rows).`
       );
       setValidation(null);
       setFile(null);
-      await reloadList();
+      await loadSummary();
+      await loadTable();
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -81,24 +264,44 @@ export default function MasterDemandPage() {
     }
   };
 
+  const v = validation;
+  const validN = Number(v?.valid_rows ?? 0);
+  const canSave = Boolean(file && validN > 0 && !uploadBusy);
+
+  const periodSubtitle =
+    summary?.date_min && summary?.date_max
+      ? `${formatMonthYear(new Date(summary.date_min))} – ${formatMonthYear(new Date(summary.date_max))}`
+      : "—";
+
+  const groupOptions = summary?.demand_groups ?? [];
+
+  const from = total === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1;
+  const to = Math.min(safePage * PAGE_SIZE, total);
+
   return (
-    <div className="space-y-6 animate-in fade-in zoom-in duration-500">
-      <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+    <div className="space-y-6 animate-in fade-in zoom-in duration-500 pb-10">
+      <div className="flex flex-col gap-4 border-b border-slate-800 pb-5 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-br from-white to-slate-400 bg-clip-text text-transparent">
-            Master Demand
-          </h1>
-          <p className="text-sm text-slate-400 mt-1">
-            Upload demand harian (dari Excel) dengan preview validasi sebelum simpan.
+          <h1 className="text-3xl font-extrabold tracking-tight text-white">Master Demand</h1>
+          <p className="text-sm text-slate-400 mt-1 max-w-2xl">
+            Upload and manage daily demand per SKU for DDMRP buffer calculation.
           </p>
         </div>
-        <a
-          href={exportDemandUrl()}
-          onClick={() => setLastExportAt(new Date().toLocaleString())}
-          className="text-sm text-indigo-400 hover:text-indigo-300"
-        >
-          ↓ Export Master Demand
-        </a>
+        <div className="flex flex-wrap gap-2 shrink-0">
+          <a
+            href={demandTemplateUrl()}
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-600 bg-slate-800/80 px-4 py-2 text-sm font-medium text-slate-100 hover:bg-slate-700"
+          >
+            <span aria-hidden>⬇</span> Template Excel
+          </a>
+          <a
+            href={exportDemandUrl()}
+            onClick={() => setLastExportAt(new Date().toLocaleString())}
+            className="inline-flex items-center gap-2 rounded-lg border border-indigo-500/50 bg-indigo-600/90 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-500"
+          >
+            <span aria-hidden>⬇</span> Export Demand
+          </a>
+        </div>
       </div>
 
       {msg && (
@@ -111,138 +314,399 @@ export default function MasterDemandPage() {
           {err}
         </div>
       )}
-      {lastUploadSummary && (
-        <div className="rounded-xl border border-slate-800 bg-slate-900/40 text-slate-300 px-4 py-3 text-xs">
-          {lastUploadSummary}
-        </div>
-      )}
       {lastExportAt && (
         <div className="rounded-xl border border-slate-800 bg-slate-900/40 text-slate-300 px-4 py-3 text-xs">
-          Export terakhir: {lastExportAt}
+          Last export: {lastExportAt}
         </div>
       )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-5xl mx-auto mt-6">
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6">
-          <h2 className="text-xl font-bold text-white mb-2">Validasi & preview</h2>
-          <p className="text-slate-400 mb-4 text-sm">
-            Kolom wajib: <strong>Date</strong>, <strong>SKU</strong>, <strong>Demand</strong>. Kolom promo opsional: <strong>Promo_Discount</strong>.
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4 shadow-lg">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Total record</p>
+          <p className="mt-2 text-2xl font-bold text-white tabular-nums">
+            {summary ? formatIntId(summary.total_records) : "—"}
           </p>
-
-          <a
-            href={demandTemplateUrl()}
-            className="text-sm text-indigo-400 hover:text-indigo-300 block mb-4"
-          >
-            ↓ Unduh template Demand
-          </a>
-
-          <label className="inline-block bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3 px-6 rounded-lg cursor-pointer shadow-lg">
-            {uploadBusy ? "Memproses…" : "Pilih file Excel"}
-            <input
-              type="file"
-              className="hidden"
-              accept=".xlsx,.xls"
-              disabled={uploadBusy}
-              onChange={(e) => onValidate(e.target.files?.[0] ?? null)}
-            />
-          </label>
-
-          {validation && (
-            <div className="mt-4 text-sm text-slate-300 space-y-2">
-              <p>
-                Total {String(validation.total_rows ?? 0)} · valid{" "}
-                {String(validation.valid_rows ?? 0)} · error{" "}
-                {String(validation.error_rows ?? 0)}
-              </p>
-
-              <button
-                type="button"
-                disabled={uploadBusy || Number(validation.valid_rows ?? 0) <= 0}
-                onClick={onCommit}
-                className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold py-2 px-4 rounded-lg"
-              >
-                Simpan Data Valid
-              </button>
-            </div>
-          )}
+          <p className="mt-1 text-xs text-slate-500">demand records stored</p>
         </div>
-
-        <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6">
-          <h2 className="text-xl font-bold text-white mb-2">Error preview</h2>
-          {!validation && (
-            <p className="text-slate-500 text-sm">Belum ada validasi.</p>
-          )}
-
-          {validation && (
-            <div className="text-slate-300 text-sm space-y-2">
-              {Array.isArray(validation.errors) && validation.errors.length > 0 ? (
-                <div className="space-y-2">
-                  {(validation.errors as any[]).slice(0, 20).map((e, idx) => (
-                    <div
-                      key={idx}
-                      className="border border-slate-800 rounded-lg px-3 py-2 bg-slate-950/30"
-                    >
-                      <div className="font-mono text-slate-400">
-                        row {String(e.row ?? "?" )}
-                      </div>
-                      <div className="text-red-300">{String(e.message ?? "")}</div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="text-emerald-300">Tidak ada error.</p>
-              )}
-            </div>
-          )}
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4 shadow-lg">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Data period</p>
+          <p className="mt-2 text-2xl font-bold text-white tabular-nums">
+            {summary?.days_span != null ? `${summary.days_span}` : "—"}{" "}
+            <span className="text-base font-semibold text-slate-400">days</span>
+          </p>
+          <p className="mt-1 text-xs text-slate-500 truncate" title={periodSubtitle}>
+            {periodSubtitle}
+          </p>
+        </div>
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4 shadow-lg">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">SKUs covered</p>
+          <p className="mt-2 text-2xl font-bold text-white tabular-nums">
+            {summary ? `${summary.sku_with_demand} / ${summary.sku_active_master}` : "—"}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">active SKUs in master</p>
+        </div>
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4 shadow-lg">
+          <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">Last upload</p>
+          <p
+            className={`mt-2 text-lg font-bold ${
+              lastUpload?.status === "Success" || lastUpload?.status === "Berhasil" ? "text-emerald-400" : "text-slate-400"
+            }`}
+          >
+            {lastUpload?.status ?? "—"}
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            {lastUpload
+              ? `${new Date(lastUpload.at).toLocaleDateString("en-US")} · ${formatIntId(lastUpload.rows)} rows`
+              : "No history on this device yet"}
+          </p>
         </div>
       </div>
 
-      <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6 max-w-5xl mx-auto">
-        <div className="flex items-center justify-between pb-4 border-b border-slate-800">
-          <h2 className="text-lg font-bold text-white">Daftar demand (terbaru)</h2>
-          <p className="text-xs text-slate-500">{listBusy ? "Memuat…" : `Showing ${rows.length}`}</p>
+      <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 md:p-6">
+        <h2 className="text-sm font-bold text-slate-300 uppercase tracking-wide mb-4">Upload flow</h2>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-2">
+          {[
+            {
+              step: 1,
+              title: "Choose Excel / CSV file",
+              body: (
+                <div
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={onDrop}
+                  className="mt-3 rounded-xl border-2 border-dashed border-slate-600 bg-slate-950/50 px-3 py-6 text-center"
+                >
+                  <p className="text-2xl text-slate-500" aria-hidden>
+                    ↑
+                  </p>
+                  <p className="text-xs text-slate-400 mt-2">
+                    Drag &amp; drop here or click to choose a file{" "}
+                    <span className="text-slate-300">.xlsx, .xls, .csv</span>
+                    <span className="block text-[11px] text-slate-600 mt-1">Max. 10 MB (recommended)</span>
+                  </p>
+                  <label className="mt-3 inline-block cursor-pointer rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500">
+                    {uploadBusy ? "Processing…" : "Choose file"}
+                    <input
+                      type="file"
+                      className="hidden"
+                      accept=".xlsx,.xls,.csv"
+                      disabled={uploadBusy}
+                      onChange={(e) => void onPickFile(e.target.files?.[0] ?? null)}
+                    />
+                  </label>
+                  {file && (
+                    <p className="mt-2 text-[11px] text-emerald-400 truncate" title={file.name}>
+                      {file.name}
+                    </p>
+                  )}
+                  <p className="mt-4 text-left text-[10px] font-semibold uppercase text-slate-500">
+                    Required columns
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {[
+                      { col: "ID Item", required: true },
+                      { col: "Nama Item", required: false },
+                      { col: "Date", required: true },
+                      { col: "Demand ", required: true },
+                      { col: "Sales Price Price After Discont", required: false },
+                      { col: "Promo Discount", required: false },
+                      { col: "IsPromo", required: false },
+                      { col: "PromoDiscountPct", required: false },
+                      { col: "PromoType", required: false },
+                    ].map(({ col, required }) => (
+                      <span
+                        key={col}
+                        className={`rounded-md border px-2 py-0.5 text-[10px] ${
+                          required
+                            ? "border-sky-600/60 bg-sky-900/30 text-sky-300"
+                            : "border-slate-700 bg-slate-900 text-slate-400"
+                        }`}
+                        title={required ? "Required" : "Optional"}
+                      >
+                        {col}
+                      </span>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-[10px] text-slate-600">
+                    Blue columns = required. Item name &amp; group come from Master SKU when empty.
+                  </p>
+                </div>
+              ),
+            },
+            {
+              step: 2,
+              title: "Validation & preview",
+              body: (
+                <div className="mt-3 space-y-3 text-sm">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-2">
+                      <p className="text-[10px] text-slate-500">Valid rows</p>
+                      <p className="text-lg font-semibold text-emerald-400 tabular-nums">
+                        {v ? String(v.valid_rows ?? 0) : "—"}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-2">
+                      <p className="text-[10px] text-slate-500">Error rows</p>
+                      <p className="text-lg font-semibold text-red-400 tabular-nums">
+                        {v ? String(v.error_rows ?? 0) : "—"}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-2">
+                      <p className="text-[10px] text-slate-500">SKUs recognized</p>
+                      <p className="text-lg font-semibold text-sky-400 tabular-nums">
+                        {v ? String(v.unique_skus ?? 0) : "—"}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-2">
+                      <p className="text-[10px] text-slate-500">Duplicates</p>
+                      <p className="text-lg font-semibold text-amber-400 tabular-nums">
+                        {v ? String(v.duplicate_rows_in_file ?? 0) : "—"}
+                      </p>
+                    </div>
+                  </div>
+                  {!v && (
+                    <p className="text-xs text-slate-500">
+                      Upload a file first. Validation results will appear here.
+                    </p>
+                  )}
+                  {v?.ok === false && (
+                    <p className="text-xs text-red-300">{String(v.error ?? "Validation failed")}</p>
+                  )}
+                </div>
+              ),
+            },
+            {
+              step: 3,
+              title: "Confirm & save",
+              body: (
+                <div className="mt-3 space-y-3 text-sm">
+                  <ul className="space-y-1.5 text-xs text-slate-400">
+                    <li className="flex justify-between gap-2">
+                      <span>File</span>
+                      <span className="text-slate-200 truncate max-w-[10rem]">{file?.name ?? "—"}</span>
+                    </li>
+                    <li className="flex justify-between gap-2">
+                      <span>Total rows</span>
+                      <span className="text-slate-200">{v ? String(v.total_rows ?? 0) : "—"}</span>
+                    </li>
+                    <li className="flex justify-between gap-2">
+                      <span>Will be saved</span>
+                      <span className="text-emerald-400 font-medium">{String(v?.valid_rows ?? 0)}</span>
+                    </li>
+                    <li className="flex justify-between gap-2">
+                      <span>Will be skipped</span>
+                      <span className="text-amber-300 font-medium">{String(v?.error_rows ?? 0)}</span>
+                    </li>
+                  </ul>
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase text-slate-500 mb-2">Save mode</p>
+                    <label className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="saveMode"
+                        checked={saveMode === "insert_only"}
+                        onChange={() => setSaveMode("insert_only")}
+                      />
+                      <span className="text-xs text-slate-300">Insert new rows only (skip existing date+SKU)</span>
+                    </label>
+                    <label className="mt-2 flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="saveMode"
+                        checked={saveMode === "upsert"}
+                        onChange={() => setSaveMode("upsert")}
+                      />
+                      <span className="text-xs text-slate-300">Overwrite existing rows (update demand)</span>
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={!canSave}
+                    onClick={() => void onCommit()}
+                    className="w-full rounded-xl bg-indigo-600 py-3 text-sm font-bold text-white shadow-lg hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    Save to database
+                  </button>
+                </div>
+              ),
+            },
+          ].map((block) => (
+            <div
+              key={block.step}
+              className="relative rounded-xl border border-slate-800 bg-slate-950/30 p-4 md:border-slate-800"
+            >
+              <div className="flex items-center gap-2">
+                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-600 text-sm font-bold text-white">
+                  {block.step}
+                </span>
+                <h3 className="text-sm font-bold text-white">{block.title}</h3>
+              </div>
+              {block.body}
+            </div>
+          ))}
         </div>
+      </div>
 
-        <div className="overflow-x-auto mt-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div className="relative flex-1 max-w-md">
+          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-500">🔍</span>
+          <input
+            type="search"
+            placeholder="Search SKU, name…"
+            className="w-full rounded-lg border border-slate-700 bg-slate-900 py-2.5 pl-10 pr-3 text-sm text-white placeholder:text-slate-600"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        <div className="flex flex-wrap gap-2 items-center">
+          <select
+            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white"
+            value={datePreset}
+            onChange={(e) => setDatePreset(e.target.value as DatePreset)}
+          >
+            <option value="all">Date: All</option>
+            <option value="7d">Last 7 days</option>
+            <option value="30d">Last 30 days</option>
+            <option value="90d">Last 90 days</option>
+          </select>
+          <select
+            className="rounded-lg border border-slate-700 bg-slate-900 px-3 py-2.5 text-sm text-white"
+            value={groupFilter}
+            onChange={(e) => setGroupFilter(e.target.value)}
+          >
+            <option value="__all__">Group: All</option>
+            {groupOptions.map((g) => (
+              <option key={g} value={g}>
+                {g}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => setPromoOnly((p) => !p)}
+            className={`rounded-lg border px-3 py-2.5 text-sm font-medium transition-colors ${
+              promoOnly
+                ? "border-amber-500/60 bg-amber-600/20 text-amber-200"
+                : "border-slate-700 bg-slate-900 text-slate-400 hover:text-white"
+            }`}
+          >
+            Promo only
+          </button>
+          <span className="text-xs text-slate-500 tabular-nums lg:ml-2">
+            Showing {listBusy ? "…" : total}
+          </span>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-slate-800 bg-slate-900 shadow-xl overflow-hidden">
+        <div className="border-b border-slate-800 px-4 py-3 sm:px-6">
+          <h2 className="text-lg font-bold text-white">Recent demand list</h2>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Daily demand per SKU — newest first
+          </p>
+        </div>
+        <div className="overflow-x-auto">
           <table className="w-full text-left text-sm text-slate-300">
-            <thead className="bg-slate-950 text-slate-400 border-b border-slate-800">
+            <thead className="bg-slate-950 text-slate-500 text-xs uppercase tracking-wide border-b border-slate-800">
               <tr>
-                <th className="px-3 py-3 font-medium">Date</th>
-                <th className="px-3 py-3 font-medium">SKU</th>
-                <th className="px-3 py-3 font-medium">Nama</th>
-                <th className="px-3 py-3 font-medium">Group</th>
-                <th className="px-3 py-3 font-medium text-right">Demand</th>
-                <th className="px-3 py-3 font-medium text-right">Promo</th>
+                <th className="px-4 py-3 font-medium">Date</th>
+                <th className="px-4 py-3 font-medium">SKU / Nama</th>
+                <th className="px-4 py-3 font-medium">Group</th>
+                <th className="px-4 py-3 font-medium">Demand</th>
+                <th className="px-4 py-3 font-medium">Promo</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60">
-              {rows.length === 0 ? (
+              {rows.length === 0 && !listBusy ? (
                 <tr>
-                  <td colSpan={6} className="px-3 py-4 text-center text-slate-500">
-                    Belum ada data demand di database.
+                  <td colSpan={5} className="px-4 py-10 text-center text-slate-500">
+                    No demand data matches the current filters.
                   </td>
                 </tr>
               ) : (
-                rows.map((r) => (
-                  <tr key={r.id} className="hover:bg-slate-800/40 transition-colors">
-                    <td className="px-3 py-3">{r.date ?? "—"}</td>
-                    <td className="px-3 py-3 font-semibold text-white">{r.sku}</td>
-                    <td className="px-3 py-3 max-w-[220px] truncate">{r.nama_item ?? "—"}</td>
-                    <td className="px-3 py-3 max-w-[180px] truncate">{r.group ?? "—"}</td>
-                    <td className="px-3 py-3 text-right text-emerald-300">
-                      {Number(r.demand).toFixed(2)}
-                    </td>
-                    <td className="px-3 py-3 text-right text-amber-300">
-                      {Number(r.promo_discount).toFixed(2)}
-                    </td>
-                  </tr>
-                ))
+                rows.map((r) => {
+                  const g = String(r.group ?? "").trim() || "—";
+                  const pct = Math.min(100, (Number(r.demand) / maxDemandOnPage) * 100);
+                  const promo = Number(r.promo_discount ?? 0);
+                  return (
+                    <tr key={r.id} className="hover:bg-slate-800/40">
+                      <td className="px-4 py-3 align-top">
+                        <div className="text-white font-medium">{formatDateShort(r.date)}</div>
+                        <div className="text-[11px] text-slate-600">{daysAgoLabel(r.date)}</div>
+                      </td>
+                      <td className="px-4 py-3 align-top">
+                        <div className="font-semibold text-white">{r.sku}</div>
+                        <div className="text-xs text-slate-500 truncate max-w-[200px]">
+                          {r.nama_item ?? "—"}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 align-top">
+                        {g === "—" ? (
+                          "—"
+                        ) : (
+                          <span
+                            className={`inline-flex rounded-md border px-2 py-0.5 text-xs font-semibold ${groupBadgeClass(g)}`}
+                          >
+                            {g}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3 align-top">
+                        <div className="flex items-center gap-2">
+                          <div className="h-2 w-16 overflow-hidden rounded-full bg-slate-800">
+                            <div
+                              className="h-full rounded-full bg-emerald-500"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                          <span className="tabular-nums text-emerald-300 font-medium">
+                            {formatIntId(Number(r.demand))}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-3 align-top">
+                        {promo > 0 ? (
+                          <span className="inline-flex rounded-md border border-amber-500/40 bg-amber-500/15 px-2 py-0.5 text-xs font-bold text-amber-300">
+                            {(promo <= 1 ? promo * 100 : promo).toFixed(0)}%
+                          </span>
+                        ) : (
+                          <span className="text-slate-600">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
+        </div>
+        <div className="flex flex-col gap-2 border-t border-slate-800 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6 text-xs text-slate-500">
+          <span>
+            Showing {from}-{to} of {total} records
+            {summary ? ` (${formatIntId(summary.total_records)} total)` : ""}
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              disabled={safePage <= 1 || listBusy}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              className="rounded border border-slate-700 px-2 py-1 text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+            >
+              ←
+            </button>
+            <span className="tabular-nums text-slate-400">
+              Page {safePage} / {pageCount}
+            </span>
+            <button
+              type="button"
+              disabled={safePage >= pageCount || listBusy}
+              onClick={() => setPage((p) => Math.min(pageCount, p + 1))}
+              className="rounded border border-slate-700 px-2 py-1 text-slate-300 hover:bg-slate-800 disabled:opacity-40"
+            >
+              →
+            </button>
+          </div>
         </div>
       </div>
     </div>
   );
 }
-

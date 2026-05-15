@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import {
   getActiveBufferDetail,
@@ -7,21 +8,32 @@ import {
   getLatestRun,
   getParitySnapshot,
   listSkus,
+  runForecast,
   runForecastAndOptimize,
   runOptimize,
   type ForecastAndOptimizeResponse,
   type DatasetStatus,
   type SkuRow,
+  type ParitySnapshot,
 } from "@/lib/api";
+
+function fmtDateDdMmYy(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (m) return `${m[3]}/${m[2]}/${m[1].slice(-2)}`;
+  return iso;
+}
 
 function ForecastChart({
   testDates,
   actual,
   predicted,
+  unit = "EA",
 }: {
   testDates: string[];
   actual: number[];
   predicted: number[];
+  unit?: string;
 }) {
   const w = 860;
   const h = 360;
@@ -68,7 +80,7 @@ function ForecastChart({
       return (
         <g key={`${color}-${i}`}>
           <circle cx={px} cy={py} r={2.6} fill={color}>
-            <title>{`${testDates[i] ?? `Titik ${i + 1}`}: ${v.toFixed(2)}`}</title>
+            <title>{`${testDates[i] ?? `Point ${i + 1}`}: ${v.toFixed(2)}`}</title>
           </circle>
           {showLabel ? (
             <text
@@ -121,7 +133,7 @@ function ForecastChart({
         {points(actual, "#38bdf8")}
         {points(predicted, "#a78bfa")}
         <text x={w / 2} y={h - 8} textAnchor="middle" className="fill-slate-400 text-[11px]">
-          X: Tanggal Periode Uji
+          X: Test period date
         </text>
         <text
           x={14}
@@ -130,18 +142,18 @@ function ForecastChart({
           textAnchor="middle"
           className="fill-slate-400 text-[11px]"
         >
-          Y: Demand (CTN)
+          Y: Demand ({unit})
         </text>
         <text x={pad} y={18} className="fill-slate-400 text-[10px]">
-          Aktual (solid) vs prediksi terbaik (dash)
+          Actual (solid) vs best forecast (dashed)
         </text>
         <text x={w - pad} y={18} textAnchor="end" className="fill-slate-500 text-[9px]">
-          Label titik adaptif: tiap {labelEvery} titik
+          Adaptive point labels: every {labelEvery} points
         </text>
       </svg>
       <p className="text-[11px] text-slate-500 mt-1">
-        Periode uji: {testDates[0] ?? "—"} … {testDates[testDates.length - 1] ?? "—"} (
-        {n} hari)
+        Test period: {testDates[0] ?? "—"} … {testDates[testDates.length - 1] ?? "—"} (
+        {n} days)
       </p>
     </div>
   );
@@ -157,10 +169,10 @@ export default function Analytics() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [slTarget, setSlTarget] = useState(0.95);
-  const [popSize, setPopSize] = useState(24);
-  const [nGen, setNGen] = useState(40);
+  const [popSize, setPopSize] = useState(30);
+  const [nGen, setNGen] = useState(80);
   const [latestRunAt, setLatestRunAt] = useState<string | null>(null);
-  const [parityMsg, setParityMsg] = useState<string | null>(null);
+  const [paritySnapshot, setParitySnapshot] = useState<ParitySnapshot | null>(null);
   const [activeBuffer, setActiveBuffer] = useState<Awaited<ReturnType<typeof getActiveBufferDetail>> | null>(null);
   const [showAllBufferRows, setShowAllBufferRows] = useState(false);
 
@@ -174,7 +186,7 @@ export default function Analytics() {
           daily_rows: 0,
           skus_with_demand: 0,
           ready_for_forecast: false,
-          message: "Tidak dapat menghubungi API.",
+          message: "Unable to reach API.",
         })
       );
   }, []);
@@ -231,21 +243,25 @@ export default function Analytics() {
     [skuList, selectedSku]
   );
 
+  const planningUnit =
+    String(optimize?.unit ?? forecast?.unit ?? "EA").toUpperCase();
+
+  const refreshActiveBuffer = () => {
+    if (!selectedSku) return;
+    getActiveBufferDetail(selectedSku)
+      .then((d) => setActiveBuffer(d))
+      .catch(() => setActiveBuffer(null));
+  };
+
   const onRunForecast = async () => {
     if (selectedSku === "") return;
     setLoading(true);
     setError(null);
     try {
-      const data = await runForecastAndOptimize(selectedSku, {
-        sl_target: slTarget,
-        pop_size: popSize,
-        n_gen: nGen,
-        include_baseline: true,
-      });
-      setForecast(data.forecast);
-      setOptimize(data.optimize);
+      const fc = await runForecast(selectedSku);
+      setForecast(fc);
       setLatestRunAt(new Date().toISOString());
-      setActiveTab("optimasi");
+      setActiveTab("forecasting");
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -258,6 +274,27 @@ export default function Analytics() {
     setLoading(true);
     setError(null);
     try {
+      const opt = await runOptimize(selectedSku, {
+        sl_target: slTarget,
+        pop_size: popSize,
+        n_gen: nGen,
+        include_baseline: true,
+      });
+      setOptimize(opt);
+      setLatestRunAt(new Date().toISOString());
+      setActiveTab("optimasi");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const onRunFullPipeline = async () => {
+    if (selectedSku === "") return;
+    setLoading(true);
+    setError(null);
+    try {
       const data = await runForecastAndOptimize(selectedSku, {
         sl_target: slTarget,
         pop_size: popSize,
@@ -267,7 +304,8 @@ export default function Analytics() {
       setForecast(data.forecast);
       setOptimize(data.optimize);
       setLatestRunAt(new Date().toISOString());
-      setActiveTab("optimasi");
+      setActiveTab("aktif");
+      refreshActiveBuffer();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -281,11 +319,7 @@ export default function Analytics() {
     setError(null);
     try {
       const p = await getParitySnapshot(selectedSku);
-      setParityMsg(
-        `Parity snapshot SKU ${String(p.sku)} · model=${String(p.forecast_best_model)} · MAE=${String(
-          p.forecast_mae
-        )} · optimized total_cost=${String((p.optimized as Record<string, unknown>)?.total_cost ?? "—")}`
-      );
+      setParitySnapshot(p);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -308,19 +342,15 @@ export default function Analytics() {
 
   return (
     <div className="space-y-6 animate-in fade-in zoom-in duration-500">
-      <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+      <div className="flex flex-col gap-3 border-b border-slate-800 pb-4">
         <div>
           <h1 className="text-3xl font-extrabold tracking-tight bg-gradient-to-br from-white to-slate-400 bg-clip-text text-transparent">
-            Analytics & Parameter DDMRP
+            Analytics &amp; Buffer
           </h1>
           <p className="text-sm text-slate-400 mt-1">
-            Forecasting dan optimasi buffer (hybrid notebook) per SKU terpilih
+            Hybrid notebook flow (RUN 2 → 3 → 4): forecast, ADI-CV² + GA buffer, replenishment window.
+            Planning unit: <span className="font-mono text-slate-300">{planningUnit}</span>
           </p>
-          {forecast?.qty_per_carton ? (
-            <p className="text-xs text-slate-500 mt-1">
-              Unit kalkulasi: {forecast.unit ?? "CTN"} · 1 CTN = {forecast.qty_per_carton} pcs
-            </p>
-          ) : null}
           {latestRunAt ? (
             <p className="text-xs text-slate-500 mt-1">
               Latest run SKU: <span className="font-mono text-slate-300">{latestRunAt}</span>
@@ -338,10 +368,10 @@ export default function Analytics() {
           }`}
         >
           <p className="font-medium">
-            {dataset.ready_for_forecast ? "Data DB siap untuk forecast" : "Lengkapi master + demand"}
+            {dataset.ready_for_forecast ? "DB data ready for forecast" : "Complete master + demand"}
           </p>
           <p className="text-xs opacity-90 mt-1">
-            Master: {dataset.master_rows} SKU · Baris harian: {dataset.daily_rows} · SKU punya demand:{" "}
+            Master: {dataset.master_rows} SKUs · Daily rows: {dataset.daily_rows} · SKUs with demand:{" "}
             {dataset.skus_with_demand}
           </p>
           <p className="text-xs mt-1">{dataset.message}</p>
@@ -373,11 +403,21 @@ export default function Analytics() {
         </div>
         {selectedSkuMeta ? (
           <div className="text-xs text-slate-400 pb-1">
-            ADU: <span className="font-mono text-slate-200">{Number(selectedSkuMeta.ADU ?? 0).toFixed(2)}</span> CTN
+            ADU: <span className="font-mono text-slate-200">{Number(selectedSkuMeta.ADU ?? 0).toFixed(2)}</span>{" "}
+            {planningUnit}
             {" · "}Total demand:{" "}
-            <span className="font-mono text-slate-200">{Number(selectedSkuMeta.Total_Demand ?? 0).toFixed(2)}</span> CTN
+            <span className="font-mono text-slate-200">{Number(selectedSkuMeta.Total_Demand ?? 0).toFixed(2)}</span>{" "}
+            {planningUnit}
           </div>
         ) : null}
+        <button
+          type="button"
+          disabled={loading || selectedSku === ""}
+          onClick={() => void onRunFullPipeline()}
+          className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-semibold shadow-lg shadow-indigo-500/20"
+        >
+          {loading ? "Processing…" : "Run full pipeline"}
+        </button>
         <button
           type="button"
           disabled={loading || selectedSku === ""}
@@ -387,18 +427,51 @@ export default function Analytics() {
           {loading ? "Checking…" : "Parity Snapshot"}
         </button>
       </div>
-      {parityMsg && (
-        <div className="rounded-xl border border-slate-800 bg-slate-900/40 text-slate-300 px-4 py-3 text-xs">
-          {parityMsg}
+      {paritySnapshot && (
+        <div className="rounded-xl border border-slate-800 bg-slate-900/40 text-slate-300 px-4 py-3 text-xs space-y-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <p className="font-medium text-slate-200">
+              Parity snapshot — SKU <span className="font-mono">{paritySnapshot.sku}</span>
+            </p>
+            <button
+              type="button"
+              onClick={() => setParitySnapshot(null)}
+              className="text-slate-500 hover:text-slate-300 text-[11px]"
+            >
+              Close
+            </button>
+          </div>
+          <p className="text-[11px] text-slate-500">
+            Compare with the Last Version notebook output (README → Parity Check). Figures below are
+            recomputed from the DB when you click (not from the stored latest run).
+          </p>
+          <pre className="font-mono text-[11px] leading-relaxed overflow-x-auto max-h-80 overflow-y-auto text-slate-400 bg-slate-950/80 rounded-lg p-3 border border-slate-800/80">
+            {JSON.stringify(paritySnapshot, null, 2)}
+          </pre>
         </div>
       )}
 
+      <div className="rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3">
+        <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-2">Notebook flow</p>
+        <ol className="flex flex-wrap gap-2 text-xs text-slate-400">
+          {[
+            "RUN 2 — Forecast (model ranking)",
+            "RUN 3 — ADI-CV² classify + DDMRP simulate + GA",
+            "RUN 4 — Active buffer & replenishment window",
+          ].map((step) => (
+            <li key={step} className="rounded-md border border-slate-700 bg-slate-950/60 px-2.5 py-1">
+              {step}
+            </li>
+          ))}
+        </ol>
+      </div>
+
       <div className="flex flex-wrap gap-2 bg-slate-900/50 p-1 rounded-xl w-fit border border-slate-800">
         {[
-          ["forecasting", "Forecasting"],
-          ["parameter", "Parameter & optimasi"],
-          ["optimasi", "Hasil optimasi buffer"],
-          ["aktif", "Buffer aktif"],
+          ["forecasting", "RUN 2 — Forecast"],
+          ["parameter", "RUN 3 — Classify & GA"],
+          ["optimasi", "RUN 3 — Results"],
+          ["aktif", "RUN 4 — Active buffer"],
         ].map(([id, label]) => (
           <button
             key={id}
@@ -420,8 +493,7 @@ export default function Analytics() {
           <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6">
             <h2 className="text-lg font-bold text-white mb-2">Forecasting demand</h2>
             <p className="text-xs text-slate-400 mb-4">
-              Out-of-sample terakhir (~20% hari): bandingkan model; metrik terbaik dipakai untuk
-              simulasi buffer.
+              Latest out-of-sample (~20% of days): compare models; best metrics drive buffer simulation.
             </p>
             <button
               type="button"
@@ -429,13 +501,13 @@ export default function Analytics() {
               onClick={onRunForecast}
               className="bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white px-4 py-2 rounded-lg text-sm font-semibold"
             >
-              {loading ? "Memproses…" : "Run forecast"}
+              {loading ? "Processing…" : "Run forecast"}
             </button>
 
             {bestMetrics != null ? (
               <div className="mt-6 space-y-2">
                 <p className="text-sm text-slate-300">
-                  Model terbaik:{" "}
+                  Best model:{" "}
                   <span className="text-teal-400 font-mono">{String(forecast?.best_model ?? "")}</span>
                 </p>
                 <div className="grid grid-cols-2 gap-2 text-sm">
@@ -454,7 +526,7 @@ export default function Analytics() {
           </div>
 
           <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6">
-            <h3 className="text-white font-bold mb-4">Grafik — periode uji</h3>
+            <h3 className="text-white font-bold mb-4">Chart — test period</h3>
             {forecast != null &&
             bestPred != null &&
             Array.isArray(forecast.actual_test) ? (
@@ -462,10 +534,11 @@ export default function Analytics() {
                 testDates={forecast.test_dates as string[]}
                 actual={forecast.actual_test as number[]}
                 predicted={bestPred}
+                unit={planningUnit}
               />
             ) : null}
             {!forecast && (
-              <p className="text-slate-500 text-sm">Jalankan forecast untuk melihat grafik.</p>
+              <p className="text-slate-500 text-sm">Run forecast to see the chart.</p>
             )}
           </div>
 
@@ -506,7 +579,7 @@ export default function Analytics() {
       {activeTab === "parameter" && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-2">
           <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6">
-            <h3 className="text-white font-bold mb-4">Parameter optimasi buffer (GA)</h3>
+            <h3 className="text-white font-bold mb-4">Buffer optimization parameters (GA)</h3>
             <div className="space-y-4">
               <div>
                 <label className="block text-xs text-slate-400 mb-1">Service level target</label>
@@ -521,7 +594,7 @@ export default function Analytics() {
                 />
               </div>
               <div>
-                <label className="block text-xs text-slate-400 mb-1">Populasi GA</label>
+                <label className="block text-xs text-slate-400 mb-1">GA population</label>
                 <input
                   type="number"
                   min={6}
@@ -532,7 +605,7 @@ export default function Analytics() {
                 />
               </div>
               <div>
-                <label className="block text-xs text-slate-400 mb-1">Generasi</label>
+                <label className="block text-xs text-slate-400 mb-1">Generations</label>
                 <input
                   type="number"
                   min={5}
@@ -544,8 +617,8 @@ export default function Analytics() {
               </div>
             </div>
             <p className="text-xs text-slate-500 mt-4">
-              Menjalankan forecast + klasifikasi ADI-CV² + simulasi DDMRP + GA sesuai notebook.
-              Butuh beberapa detik hingga beberapa menit.
+              Runs forecast + ADI-CV² classification + DDMRP simulation + GA per notebook.
+              May take seconds to minutes.
             </p>
             <button
               type="button"
@@ -553,27 +626,57 @@ export default function Analytics() {
               onClick={onRunOptimize}
               className="mt-6 w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white py-3 rounded-lg font-semibold shadow-lg shadow-indigo-500/20"
             >
-              {loading ? "Memproses…" : "Run optimization"}
+              {loading ? "Processing…" : "Optimize only (RUN 3)"}
+            </button>
+            <button
+              type="button"
+              disabled={loading || selectedSku === ""}
+              onClick={() => void onRunFullPipeline()}
+              className="mt-2 w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white py-3 rounded-lg font-semibold shadow-lg shadow-indigo-500/20"
+            >
+              {loading ? "Processing…" : "Run full pipeline (RUN 2→4)"}
             </button>
           </div>
 
           <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6">
-            <h3 className="text-white font-bold mb-4">Klasifikasi (setelah optimasi)</h3>
+            <h3 className="text-white font-bold mb-4">ADI-CV² classification (notebook RUN 3)</h3>
             {clf ? (
-              <ul className="space-y-2 text-sm text-slate-300">
-                <li>
-                  Kategori: <span className="text-amber-400">{String(clf.category)}</span>
-                </li>
-                <li>ADI: {String(clf.adi)} | CV²: {String(clf.cv2)}</li>
-                <li>
-                  Rentang VF: {String(clf.vf_low)} – {String(clf.vf_high)}
-                </li>
-                <li>
-                  Rentang LTF: {String(clf.ltf_low)} – {String(clf.ltf_high)}
-                </li>
-              </ul>
+              <div className="space-y-3 text-sm text-slate-300">
+                <p>
+                  Category: <span className="text-amber-400 font-semibold">{String(clf.category)}</span>
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    ["ADI", clf.adi],
+                    ["CV²", clf.cv2],
+                    ["DLT (days)", clf.dlt],
+                    ["ADU", clf.adu],
+                    ["BZR", clf.bzr],
+                    ["DOC", clf.doc],
+                    ["DBO (days)", clf.dbo],
+                    ["MOQ", clf.moq],
+                    ["TOR", clf.tor],
+                    ["TOY", clf.toy],
+                    ["TOG", clf.tog],
+                    ["VF init", clf.vf_init],
+                    ["LTF init", clf.ltf_init],
+                  ].map(([label, val]) => (
+                    <div
+                      key={String(label)}
+                      className="flex justify-between border border-slate-800 rounded-lg px-3 py-2"
+                    >
+                      <span className="text-slate-500">{String(label)}</span>
+                      <span className="text-white font-mono">{String(val ?? "—")}</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-xs text-slate-500">
+                  VF search: {String(clf.vf_low)} – {String(clf.vf_high)} · LTF search:{" "}
+                  {String(clf.ltf_low)} – {String(clf.ltf_high)} · Unit: {planningUnit}
+                </p>
+              </div>
             ) : (
-              <p className="text-slate-500 text-sm">Belum ada hasil — jalankan optimasi.</p>
+              <p className="text-slate-500 text-sm">No results yet — run optimization or full pipeline.</p>
             )}
           </div>
         </div>
@@ -583,7 +686,7 @@ export default function Analytics() {
         <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl overflow-hidden mt-2">
           <div className="p-6 border-b border-slate-800 flex justify-between items-center bg-slate-900/50">
             <div>
-              <h2 className="text-lg font-bold text-white">Hasil optimasi buffer</h2>
+              <h2 className="text-lg font-bold text-white">Buffer optimization results</h2>
               <p className="text-xs text-slate-400">
                 Model forecast:{" "}
                 <span className="font-mono text-indigo-400">
@@ -594,7 +697,7 @@ export default function Analytics() {
           </div>
 
           {!optimize && (
-            <p className="p-8 text-slate-500 text-sm">Jalankan optimasi dari tab Parameter.</p>
+            <p className="p-8 text-slate-500 text-sm">Run optimization from the Parameters tab.</p>
           )}
 
           {optimize != null ? (
@@ -602,7 +705,7 @@ export default function Analytics() {
               <table className="w-full text-left text-sm text-slate-300">
                 <thead className="bg-slate-950 text-slate-400 border-b border-slate-800">
                   <tr>
-                    <th className="px-6 py-4 font-medium">Skenario</th>
+                    <th className="px-6 py-4 font-medium">Scenario</th>
                     <th className="px-6 py-4 font-medium">FV</th>
                     <th className="px-6 py-4 font-medium">LTF</th>
                     <th className="px-6 py-4 font-medium">Fill rate</th>
@@ -657,12 +760,30 @@ export default function Analytics() {
         <div className="space-y-4 mt-2">
           {!activeBuffer ? (
             <div className="bg-slate-900 border border-slate-800 rounded-2xl p-8 text-slate-400 text-sm">
-              <p>Belum ada buffer aktif untuk SKU ini. Jalankan forecast + optimasi terlebih dahulu.</p>
+              <p>
+                No active buffer for this SKU. Use{" "}
+                <button
+                  type="button"
+                  onClick={() => void onRunFullPipeline()}
+                  className="text-indigo-400 hover:text-indigo-300 underline"
+                >
+                  Run full pipeline
+                </button>{" "}
+                on RUN 3 tab or the toolbar.
+              </p>
             </div>
           ) : (
             <>
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
-                <h3 className="text-white font-bold mb-3">Informasi Buffer Aktif Terpilih</h3>
+                <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                  <h3 className="text-white font-bold">Selected active buffer (RUN 4)</h3>
+                  <Link
+                    href="/replenishment"
+                    className="text-xs text-indigo-400 hover:text-indigo-300 underline"
+                  >
+                    Open replenishment page →
+                  </Link>
+                </div>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
                   <div className="border border-slate-800 rounded-lg px-3 py-2">
                     <p className="text-slate-500">Buffer ID</p>
@@ -677,20 +798,16 @@ export default function Analytics() {
                     <p className="text-emerald-300 font-mono">{activeBuffer.status}</p>
                   </div>
                   <div className="border border-slate-800 rounded-lg px-3 py-2">
-                    <p className="text-slate-500">Periode Aktif</p>
+                    <p className="text-slate-500">Active period</p>
                     <p className="text-white font-mono">
-                      {activeBuffer.start_date ?? "—"} s/d {activeBuffer.end_date ?? "—"}
+                      {fmtDateDdMmYy(activeBuffer.start_date)} to {fmtDateDdMmYy(activeBuffer.end_date)}
                     </p>
                   </div>
                   <div className="border border-slate-800 rounded-lg px-3 py-2">
                     <p className="text-slate-500">DLT / ADU</p>
                     <p className="text-white font-mono">
-                      {activeBuffer.dlt} hari / {activeBuffer.adu.toFixed(2)} {activeBuffer.unit}
+                      {activeBuffer.dlt} days / {activeBuffer.adu.toFixed(2)} {activeBuffer.unit}
                     </p>
-                  </div>
-                  <div className="border border-slate-800 rounded-lg px-3 py-2">
-                    <p className="text-slate-500">Qty per Carton</p>
-                    <p className="text-white font-mono">{activeBuffer.qty_per_carton} pcs/ctn</p>
                   </div>
                   <div className="border border-slate-800 rounded-lg px-3 py-2">
                     <p className="text-slate-500">VF / LTF</p>
@@ -705,7 +822,7 @@ export default function Analytics() {
                     </p>
                   </div>
                   <div className="border border-slate-800 rounded-lg px-3 py-2">
-                    <p className="text-slate-500">Ringkasan Replenishment</p>
+                    <p className="text-slate-500">Replenishment summary</p>
                     <p className="text-white font-mono">
                       order_days={activeBuffer.summary.n_order_days}, total_order={activeBuffer.summary.total_order_qty}
                     </p>
@@ -715,23 +832,23 @@ export default function Analytics() {
 
               <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden">
                 <div className="p-4 border-b border-slate-800 flex items-center justify-between gap-3">
-                  <h3 className="text-white font-bold">Window Replenishment (Buffer Aktif)</h3>
+                  <h3 className="text-white font-bold">Replenishment window (active buffer)</h3>
                   <button
                     type="button"
                     onClick={() => setShowAllBufferRows((v) => !v)}
                     className="text-xs px-3 py-1.5 rounded-md border border-slate-700 text-slate-300 hover:bg-slate-800"
                   >
-                    {showAllBufferRows ? "Ringkas 31 hari" : "Lihat semua hari"}
+                    {showAllBufferRows ? "Show last 31 days" : "Show all days"}
                   </button>
                 </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm text-slate-300">
                     <thead className="bg-slate-950 text-slate-400 border-b border-slate-800">
                       <tr>
-                        <th className="px-4 py-3 font-medium">Tanggal</th>
+                        <th className="px-4 py-3 font-medium">Date</th>
                         <th className="px-4 py-3 font-medium text-right">Order Qty ({activeBuffer.unit})</th>
                         <th className="px-4 py-3 font-medium text-right">NFE ({activeBuffer.unit})</th>
-                        <th className="px-4 py-3 font-medium">Zona</th>
+                        <th className="px-4 py-3 font-medium">Zone</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-800/60">
@@ -740,7 +857,7 @@ export default function Analytics() {
                         : activeBuffer.recommendations.slice(0, 31)
                       ).map((r, idx) => (
                         <tr key={`${r.date ?? "x"}-${idx}`} className="hover:bg-slate-800/40">
-                          <td className="px-4 py-2">{r.date ?? "—"}</td>
+                          <td className="px-4 py-2">{fmtDateDdMmYy(r.date)}</td>
                           <td className="px-4 py-2 text-right text-emerald-300">{Number(r.order_qty).toFixed(2)}</td>
                           <td className="px-4 py-2 text-right">{Number(r.nfe).toFixed(2)}</td>
                           <td className="px-4 py-2">{r.zone ?? "—"}</td>

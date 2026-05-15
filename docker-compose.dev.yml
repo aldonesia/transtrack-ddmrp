@@ -1,0 +1,15 @@
+# Development stack — browser calls API published on localhost:8000 (backend maps 8000:8000).
+# Usage (from repo root):
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# Frontend must be rebuilt when changing NEXT_PUBLIC_* (inlined at build time).
+# Open UI at http://localhost:3001 (required so CORS localhost:3001 matches backend).
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:8000
+        NEXT_PUBLIC_APP_MODE: development

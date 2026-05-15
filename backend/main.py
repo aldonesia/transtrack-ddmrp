@@ -16,12 +16,14 @@ from services.ddmrp_logic import optimize_buffer
 from api.analytics import router as analytics_router
 from api.analytics import post_run, RunBody
 from api.master import router as master_router
+from schema_migrate import migrate_sku_master_columns
 import math
 
 # Automatically create tables (in production use Alembic)
 Base.metadata.create_all(bind=engine)
+migrate_sku_master_columns(engine)
 
-app = FastAPI(title="DDMRP API")
+app = FastAPI(title="IDAS API")
 app.include_router(analytics_router)
 app.include_router(master_router)
 
@@ -260,6 +262,8 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
             "source": "database",
             "total_sku": 0,
             "zona_merah": 0,
+            "zona_kuning": 0,
+            "zona_hijau": 0,
             "perlu_replenishment": 0,
             "open_order": 0,
             "buffer_active": None,
@@ -267,10 +271,13 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
             "csl": None,
             "total_cost": None,
             "message": "Belum ada buffer aktif. Jalankan forecast + DDMRP + GA di tab Analytics.",
+            "critical_queue_total": 0,
             "top_critical": [],
         }
 
     zona_merah = 0
+    zona_kuning = 0
+    zona_hijau = 0
     perlu_replenishment = 0
     open_order = 0
 
@@ -307,30 +314,37 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
             is not None
         )
 
-        if zone_today == "RED":
+        zone_u = str(zone_today or "").upper()
+        if zone_u == "RED":
             zona_merah += 1
-        if order_today > 0:
-            perlu_replenishment += 1
-        if any_order:
-            open_order += 1
-
-        if zone_today == "RED" or order_today > 0:
-            priority_status = "critical" if zone_today == "RED" else "warning"
-            action = f"Order {math.ceil(order_today)}" if order_today > 0 else "—"
             top_critical.append(
                 {
                     "sku": buf.sku,
                     "nfe": nfe_today,
                     "toy": float(buf.toy or 0),
                     "tog": float(buf.tog or 0),
-                    "action": action,
-                    "status": priority_status,
+                    "action": f"Order {math.ceil(order_today)}" if order_today > 0 else "—",
+                    "status": "critical",
                 }
             )
+        elif zone_u == "YELLOW":
+            zona_kuning += 1
+        elif zone_u == "GREEN":
+            zona_hijau += 1
+        if order_today > 0:
+            perlu_replenishment += 1
+        if any_order:
+            open_order += 1
 
     top_critical.sort(
-        key=lambda r: (0 if r.get("status") == "critical" else 1, float(r.get("nfe") or 0))
+        key=lambda r: (
+            0 if r.get("status") == "critical" else 1,
+            -float(r.get("nfe") or 0),
+        )
     )
+
+    critical_queue_total = len(top_critical)
+    top_critical_preview = top_critical[:5]
 
     latest = active_buffers[0].version if active_buffers else None
 
@@ -338,6 +352,8 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
         "source": "database",
         "total_sku": total_sku,
         "zona_merah": int(zona_merah),
+        "zona_kuning": int(zona_kuning),
+        "zona_hijau": int(zona_hijau),
         "perlu_replenishment": int(perlu_replenishment),
         "open_order": int(open_order),
         "buffer_active": latest,
@@ -345,7 +361,8 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
         "csl": None,
         "total_cost": None,
         "message": None,
-        "top_critical": top_critical[:5],
+        "critical_queue_total": int(critical_queue_total),
+        "top_critical": top_critical_preview,
     }
 
 @app.get("/api/replenishment-recommendation")
