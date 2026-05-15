@@ -50,6 +50,14 @@ class TestMasterSkuColumns(unittest.TestCase):
         with self.assertRaises(ValueError):
             _coerce_master_sku_upload(df)
 
+    def test_unit_pr_accepted(self):
+        row = dict(master_sku_template_sample_rows()[0])
+        row["Unit"] = "PR"
+        df = pd.DataFrame([row], columns=list(MASTER_SKU_EXCEL_COLUMNS))
+        tidy = _coerce_master_sku_upload(df)
+        self.assertEqual(len(tidy), 1)
+        self.assertEqual(tidy.iloc[0]["unit"], "PR")
+
     def test_demand_template_dates_dd_mm_yy(self):
         row = demand_template_sample_rows()[0]
         self.assertRegex(str(row["Date"]), r"^\d{2}/\d{2}/\d{2}$")

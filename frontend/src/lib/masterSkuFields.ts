@@ -29,6 +29,7 @@ export const MASTER_SKU_ALLOWED_UNITS = [
   "BAG",
   "PKT",
   "BOX",
+  "PR",
   "LBS",
   "KG",
   "MT",

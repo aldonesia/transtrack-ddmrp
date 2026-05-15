@@ -19,6 +19,7 @@ from database import get_db
 from models import DailyRecord, SKUMaster
 from services.master_upload_parse import (
     DEMAND_EXCEL_COLUMNS,
+    MASTER_SKU_ALLOWED_UNITS,
     MASTER_SKU_EXCEL_COLUMNS,
     _coerce_demand_upload,
     _coerce_master_sku_upload,
@@ -134,6 +135,17 @@ def _effective_moq(m: Optional[int]) -> int:
     if m is None or m < 1:
         return 1
     return int(m)
+
+
+def _normalize_master_unit(unit: str) -> str:
+    u = str(unit or "EA").strip().upper()
+    if u not in MASTER_SKU_ALLOWED_UNITS:
+        allowed = ", ".join(sorted(MASTER_SKU_ALLOWED_UNITS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unit {u!r} invalid. Allowed: {allowed}",
+        )
+    return u
 
 
 def _validate_master_sku_upload(df: pd.DataFrame) -> dict[str, Any]:
@@ -312,11 +324,13 @@ def list_master_skus(db: Session = Depends(get_db)):
 @router.post("/skus")
 def create_or_update_sku(body: SKUMasterIn, db: Session = Depends(get_db)):
     sku = body.sku.strip()
+    unit = _normalize_master_unit(body.unit)
     moq_v = _effective_moq(body.moq)
     existing = db.query(SKUMaster).filter(SKUMaster.sku == sku).first()
     if existing:
         data = body.model_dump()
         data.pop("sku", None)
+        data["unit"] = unit
         data["moq"] = moq_v
         for k, v in data.items():
             setattr(existing, k, v)
@@ -327,7 +341,7 @@ def create_or_update_sku(body: SKUMasterIn, db: Session = Depends(get_db)):
     row = SKUMaster(
         sku=sku,
         nama_item=body.nama_item,
-        unit=body.unit,
+        unit=unit,
         lead_time=body.lead_time,
         moq=moq_v,
         pack_size=1,

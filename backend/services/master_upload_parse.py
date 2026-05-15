@@ -39,7 +39,7 @@ MASTER_SKU_NORMALIZED_KEYS: tuple[str, ...] = tuple(
 )
 
 MASTER_SKU_ALLOWED_UNITS: frozenset[str] = frozenset(
-    {"EA", "SET", "BAG", "PKT", "BOX", "LBS", "KG", "MT", "M", "FT", "IN", "L"}
+    {"EA", "SET", "BAG", "PKT", "BOX", "PR", "LBS", "KG", "MT", "M", "FT", "IN", "L"}
 )
 
 # Excel serial day (OOXML): day count from 1899-12-30; typical business rows are >> 25k (1970+).
