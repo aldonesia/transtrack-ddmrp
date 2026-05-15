@@ -404,7 +404,11 @@ export type DashboardSummary = {
   zona_kuning?: number;
   zona_hijau?: number;
   perlu_replenishment: number;
+  /** @deprecated Use planned_order_skus — SKUs with suggested order on buffer start day */
   open_order: number;
+  planned_order_skus?: number;
+  confirmed_po_skus?: number;
+  open_order_qty?: number;
   buffer_active: string | null;
   message?: string | null;
   critical_queue_total?: number;
@@ -416,6 +420,19 @@ export type DashboardSummary = {
     action: string;
     status?: string;
   }>;
+  sku_by_zone?: {
+    RED: Array<SkuZoneSnapshot>;
+    YELLOW: Array<SkuZoneSnapshot>;
+    GREEN: Array<SkuZoneSnapshot>;
+  };
+};
+
+export type SkuZoneSnapshot = {
+  sku: string;
+  nfe: number;
+  order_qty: number;
+  toy: number;
+  tog: number;
 };
 
 export async function getDashboardSummary(): Promise<DashboardSummary> {
@@ -453,8 +470,150 @@ export async function getReplenishmentPlan(sku: string | number) {
     tor?: number;
     toy?: number;
     tog?: number;
+    operational?: {
+      on_hand: number;
+      open_order: number;
+      qualified_demand?: number;
+      nfe: number;
+      zone: string;
+      suggested_order_qty: number;
+      confirmed_pos?: Array<{
+        id: number;
+        qty: number;
+        order_date: string | null;
+        expected_receipt_date: string | null;
+        unit: string;
+      }>;
+      unit?: string;
+    };
     recommendations: ReplenishmentRecommendation[];
   };
+}
+
+export async function recalcOperational(sku: string | number): Promise<{
+  status: string;
+  recalc: OperationalRecalc;
+}> {
+  const r = await fetch(
+    `${getApiBase()}/api/analytics/recalc-operational?sku=${encodeURIComponent(String(sku))}`,
+    { method: "POST" },
+  );
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json();
+}
+
+export type PurchaseOrder = {
+  id: number;
+  sku: string;
+  buffer_id: number;
+  order_date: string | null;
+  qty: number;
+  unit: string;
+  expected_receipt_date: string | null;
+  status: string;
+  source: string;
+  created_at: string | null;
+  confirmed_at: string | null;
+  received_at: string | null;
+  notes: string | null;
+};
+
+export type OperationalRecalc = {
+  sku: string;
+  as_of_date: string;
+  on_hand: number;
+  open_order: number;
+  qualified_demand?: number;
+  nfe: number;
+  zone: string;
+  suggested_order_qty: number;
+  tor: number;
+  toy: number;
+  tog: number;
+  unit?: string;
+};
+
+export async function createPurchaseOrder(body: {
+  sku: string;
+  qty: number;
+  order_date?: string;
+  notes?: string;
+  source?: string;
+}): Promise<PurchaseOrder> {
+  const r = await fetch(`${getApiBase()}/api/purchase-orders`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json();
+}
+
+export async function confirmPurchaseOrder(
+  poId: number,
+): Promise<{ po: PurchaseOrder; recalc: OperationalRecalc }> {
+  const r = await fetch(`${getApiBase()}/api/purchase-orders/${poId}/confirm`, {
+    method: "POST",
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json();
+}
+
+export async function receivePurchaseOrder(
+  poId: number,
+  receiptQty?: number,
+): Promise<{ po: PurchaseOrder; recalc: OperationalRecalc }> {
+  const r = await fetch(`${getApiBase()}/api/purchase-orders/${poId}/receive`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(receiptQty != null ? { receipt_qty: receiptQty } : {}),
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json();
+}
+
+export async function cancelPurchaseOrder(
+  poId: number,
+): Promise<{ po: PurchaseOrder; recalc?: OperationalRecalc }> {
+  const r = await fetch(`${getApiBase()}/api/purchase-orders/${poId}/cancel`, {
+    method: "POST",
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json();
+}
+
+export async function listPurchaseOrders(
+  sku?: string,
+  status?: string,
+  limit = 50,
+  offset = 0,
+): Promise<{ total: number; rows: PurchaseOrder[] }> {
+  const params = new URLSearchParams();
+  params.set("limit", String(limit));
+  params.set("offset", String(offset));
+  if (sku) params.set("sku", sku);
+  if (status) params.set("status", status);
+  const r = await fetch(`${getApiBase()}/api/purchase-orders?${params.toString()}`);
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json();
 }
 
 export async function getActiveBufferDetail(sku: string | number) {

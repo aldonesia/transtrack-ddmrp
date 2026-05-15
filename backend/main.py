@@ -9,23 +9,27 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 from database import engine, get_db, SessionLocal
-from models import Base, DDMRPBuffer, DDMRPBufferDetail, SKUMaster, NightlyJobRun
+from models import Base, DDMRPBuffer, DDMRPBufferDetail, PurchaseOrder, SKUMaster, NightlyJobRun
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 from fastapi import Depends
 from services.ddmrp_logic import optimize_buffer
 from api.analytics import router as analytics_router
 from api.analytics import post_run, RunBody
 from api.master import router as master_router
-from schema_migrate import migrate_sku_master_columns
+from api.purchase_order import router as purchase_order_router
+from schema_migrate import migrate_open_order_tables, migrate_sku_master_columns
 import math
 
 # Automatically create tables (in production use Alembic)
 Base.metadata.create_all(bind=engine)
 migrate_sku_master_columns(engine)
+migrate_open_order_tables(engine)
 
 app = FastAPI(title="IDAS API")
 app.include_router(analytics_router)
 app.include_router(master_router)
+app.include_router(purchase_order_router)
 
 _cors = os.getenv(
     "CORS_ORIGINS",
@@ -257,6 +261,8 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
     )
 
     total_sku = int(len(active_buffers))
+    sku_by_zone: dict[str, list] = {"RED": [], "YELLOW": [], "GREEN": []}
+
     if total_sku == 0:
         return {
             "source": "database",
@@ -265,6 +271,9 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
             "zona_kuning": 0,
             "zona_hijau": 0,
             "perlu_replenishment": 0,
+            "planned_order_skus": 0,
+            "confirmed_po_skus": 0,
+            "open_order_qty": 0,
             "open_order": 0,
             "buffer_active": None,
             "fill_rate": None,
@@ -273,13 +282,16 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
             "message": "Belum ada buffer aktif. Jalankan forecast + DDMRP + GA di tab Analytics.",
             "critical_queue_total": 0,
             "top_critical": [],
+            "sku_by_zone": sku_by_zone,
         }
 
     zona_merah = 0
     zona_kuning = 0
     zona_hijau = 0
     perlu_replenishment = 0
-    open_order = 0
+    planned_order_skus = 0
+    confirmed_po_skus = 0
+    open_order_qty = 0.0
 
     top_critical: list[dict] = []
 
@@ -302,21 +314,17 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
         order_today = float(getattr(today_detail, "order_qty", 0) or 0) if today_detail else 0.0
         nfe_today = float(getattr(today_detail, "nfe", 0) or 0) if today_detail else 0.0
 
-        any_order = (
-            db.query(DDMRPBufferDetail.id)
-            .filter(
-                DDMRPBufferDetail.buffer_id == buf.id,
-                DDMRPBufferDetail.date >= start,
-                DDMRPBufferDetail.date <= end,
-                DDMRPBufferDetail.order_qty > 0,
-            )
-            .first()
-            is not None
-        )
-
         zone_u = str(zone_today or "").upper()
+        zone_entry = {
+            "sku": str(buf.sku),
+            "nfe": round(nfe_today, 2),
+            "order_qty": round(order_today, 2),
+            "toy": round(float(buf.toy or 0), 2),
+            "tog": round(float(buf.tog or 0), 2),
+        }
         if zone_u == "RED":
             zona_merah += 1
+            sku_by_zone["RED"].append(zone_entry)
             top_critical.append(
                 {
                     "sku": buf.sku,
@@ -329,12 +337,37 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
             )
         elif zone_u == "YELLOW":
             zona_kuning += 1
+            sku_by_zone["YELLOW"].append(zone_entry)
         elif zone_u == "GREEN":
             zona_hijau += 1
+            sku_by_zone["GREEN"].append(zone_entry)
         if order_today > 0:
             perlu_replenishment += 1
-        if any_order:
-            open_order += 1
+            planned_order_skus += 1
+
+        confirmed_row = (
+            db.query(PurchaseOrder.id)
+            .filter(
+                PurchaseOrder.sku == buf.sku,
+                PurchaseOrder.status == "confirmed",
+                PurchaseOrder.order_date >= start,
+                PurchaseOrder.order_date <= end,
+            )
+            .first()
+        )
+        if confirmed_row:
+            confirmed_po_skus += 1
+            qty_sum = (
+                db.query(func.coalesce(func.sum(PurchaseOrder.qty), 0.0))
+                .filter(
+                    PurchaseOrder.sku == buf.sku,
+                    PurchaseOrder.status == "confirmed",
+                    PurchaseOrder.order_date >= start,
+                    PurchaseOrder.order_date <= end,
+                )
+                .scalar()
+            )
+            open_order_qty += float(qty_sum or 0.0)
 
     top_critical.sort(
         key=lambda r: (
@@ -342,6 +375,9 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
             -float(r.get("nfe") or 0),
         )
     )
+
+    for key in ("RED", "YELLOW", "GREEN"):
+        sku_by_zone[key].sort(key=lambda r: (float(r.get("nfe") or 0), str(r.get("sku") or "")))
 
     critical_queue_total = len(top_critical)
     top_critical_preview = top_critical[:5]
@@ -355,7 +391,10 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
         "zona_kuning": int(zona_kuning),
         "zona_hijau": int(zona_hijau),
         "perlu_replenishment": int(perlu_replenishment),
-        "open_order": int(open_order),
+        "planned_order_skus": int(planned_order_skus),
+        "confirmed_po_skus": int(confirmed_po_skus),
+        "open_order_qty": round(open_order_qty, 2),
+        "open_order": int(planned_order_skus),
         "buffer_active": latest,
         "fill_rate": None,
         "csl": None,
@@ -363,6 +402,7 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
         "message": None,
         "critical_queue_total": int(critical_queue_total),
         "top_critical": top_critical_preview,
+        "sku_by_zone": sku_by_zone,
     }
 
 @app.get("/api/replenishment-recommendation")

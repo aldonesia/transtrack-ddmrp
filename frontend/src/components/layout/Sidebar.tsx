@@ -7,7 +7,6 @@ import { getApiBase } from "@/lib/api";
 
 type DashMini = {
   perlu_replenishment?: number;
-  buffer_active?: string | null;
 };
 
 const NAV = [
@@ -45,7 +44,6 @@ export default function Sidebar() {
         if (!cancelled && j && typeof j === "object") {
           setDash({
             perlu_replenishment: Number((j as DashMini).perlu_replenishment ?? 0),
-            buffer_active: (j as { buffer_active?: string | null }).buffer_active ?? null,
           });
         }
       })
@@ -101,14 +99,6 @@ export default function Sidebar() {
         </div>
       </nav>
 
-      <div className="border-t border-slate-800 p-4">
-        <div className="rounded-lg border border-slate-700/80 bg-slate-950/60 px-3 py-2.5">
-          <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Buffer version</p>
-          <p className="mt-0.5 font-mono text-sm font-semibold text-slate-200">
-            {dash?.buffer_active ?? "—"}
-          </p>
-        </div>
-      </div>
     </div>
   );
 }

@@ -275,6 +275,11 @@ def _save_buffer_plan_and_details(
         )
 
     db.commit()
+
+    from services.operational_nfe import seed_operational_state_for_buffer
+
+    seed_operational_state_for_buffer(db, sku, buf)
+
     return int(buf.id)
 
 
@@ -504,6 +509,10 @@ def get_replenishment(
         .all()
     )
 
+    from services.operational_nfe import get_operational_snapshot
+
+    operational = get_operational_snapshot(db, sku_s, as_of=today)
+
     return {
         "sku": sku_s,
         "unit": unit,
@@ -518,6 +527,7 @@ def get_replenishment(
         "tor": float(buf.tor or 0),
         "toy": float(buf.toy or 0),
         "tog": float(buf.tog or 0),
+        "operational": operational,
         "recommendations": [
             {
                 "date": r.date.isoformat() if r.date else None,
@@ -528,6 +538,23 @@ def get_replenishment(
             for r in rows
         ],
     }
+
+
+@router.post("/recalc-operational")
+def post_recalc_operational(
+    sku: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    if not sku:
+        raise HTTPException(status_code=400, detail="Missing `sku` query param.")
+    from services.operational_nfe import recalc_operational_nfe
+
+    try:
+        summary = recalc_operational_nfe(db, str(sku).strip())
+        db.commit()
+        return {"status": "ok", "recalc": summary}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
 
 
 @router.get("/buffer-active")

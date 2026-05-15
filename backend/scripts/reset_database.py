@@ -29,7 +29,9 @@ from models import (  # noqa: F401 — register tables on Base.metadata
     DailyRecord,
     ForecastRun,
     NightlyJobRun,
+    PurchaseOrder,
     SKUMaster,
+    SkuOperationalState,
 )
 
 

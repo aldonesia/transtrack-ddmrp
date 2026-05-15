@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Text, ForeignKey, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Text, ForeignKey, UniqueConstraint, Index
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -139,3 +139,33 @@ class NightlyJobRun(Base):
     failed_skus = Column(Integer, default=0)
     message = Column(String, nullable=True)
     details_json = Column(Text, nullable=True)
+
+
+class PurchaseOrder(Base):
+    __tablename__ = "purchase_order"
+
+    __table_args__ = (Index("ix_purchase_order_sku_status", "sku", "status"),)
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    sku = Column(String, ForeignKey("sku_master.sku"), index=True, nullable=False)
+    buffer_id = Column(Integer, ForeignKey("ddmrp_buffer.id"), index=True, nullable=False)
+    order_date = Column(Date, nullable=False)
+    qty = Column(Float, nullable=False)
+    unit = Column(String, nullable=False)
+    expected_receipt_date = Column(Date, nullable=False, index=True)
+    status = Column(String, nullable=False, default="draft")  # draft | confirmed | received | cancelled
+    source = Column(String, nullable=False, default="replenishment")
+    created_at = Column(DateTime, nullable=False)
+    confirmed_at = Column(DateTime, nullable=True)
+    received_at = Column(DateTime, nullable=True)
+    notes = Column(Text, nullable=True)
+
+
+class SkuOperationalState(Base):
+    __tablename__ = "sku_operational_state"
+
+    sku = Column(String, ForeignKey("sku_master.sku"), primary_key=True)
+    as_of_date = Column(Date, nullable=False)
+    on_hand = Column(Float, nullable=False, default=0.0)
+    buffer_id = Column(Integer, ForeignKey("ddmrp_buffer.id"), nullable=False)
+    updated_at = Column(DateTime, nullable=False)

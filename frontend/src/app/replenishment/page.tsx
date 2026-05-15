@@ -3,14 +3,22 @@
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  confirmPurchaseOrder,
+  createPurchaseOrder,
   getDashboardSummary,
   getReplenishmentPlan,
   listMasterSkus,
+  listPurchaseOrders,
   listSkus,
+  recalcOperational,
   type DashboardSummary,
   type MasterSku,
+  type PurchaseOrder,
   type SkuRow,
+  type SkuZoneSnapshot,
 } from "@/lib/api";
+
+type ZoneKey = "RED" | "YELLOW" | "GREEN";
 
 const PAGE_SIZE = 8;
 
@@ -42,6 +50,15 @@ function zoneStyle(zone: string): string {
 }
 
 type ReplenishmentPlan = Awaited<ReturnType<typeof getReplenishmentPlan>>;
+
+type ScheduleRow = NonNullable<ReplenishmentPlan["recommendations"]>[number];
+
+type PoModalContext = {
+  orderDate: string;
+  suggestedQty: number;
+  zone: string;
+  rowDateLabel?: string;
+};
 
 function BufferPositionBar({
   tor,
@@ -120,6 +137,15 @@ export default function Replenishment() {
   const [zoneFilter, setZoneFilter] = useState<"ALL" | "RED" | "YELLOW" | "GREEN">("ALL");
   const [page, setPage] = useState(1);
   const [poNotice, setPoNotice] = useState<string | null>(null);
+  const [poModalOpen, setPoModalOpen] = useState(false);
+  const [poModalContext, setPoModalContext] = useState<PoModalContext | null>(null);
+  const [poQtyInput, setPoQtyInput] = useState("");
+  const [poOrderDate, setPoOrderDate] = useState("");
+  const [forceCreatePo, setForceCreatePo] = useState(false);
+  const [poSubmitting, setPoSubmitting] = useState(false);
+  const [poHistory, setPoHistory] = useState<PurchaseOrder[]>([]);
+  const [showPoHistory, setShowPoHistory] = useState(true);
+  const [zonePanel, setZonePanel] = useState<ZoneKey | null>(null);
 
   const unit = (plan?.unit ?? "EA").toUpperCase();
   const selectedSkuMeta = useMemo(
@@ -140,9 +166,11 @@ export default function Replenishment() {
     );
   }, [plan]);
 
-  const currentNfe = todayRow?.nfe ?? 0;
-  const todayOrderQty = todayRow?.order_qty ?? 0;
-  const todayZone = normZone(todayRow?.zone);
+  const op = plan?.operational;
+  const currentNfe = op?.nfe ?? todayRow?.nfe ?? 0;
+  const todayOrderQty = op?.suggested_order_qty ?? todayRow?.order_qty ?? 0;
+  const todayZone = normZone(op?.zone ?? todayRow?.zone);
+  const openOrderQty = op?.open_order ?? 0;
 
   const tor = plan?.tor ?? 0;
   const toy = plan?.toy ?? 0;
@@ -205,14 +233,23 @@ export default function Replenishment() {
     }
   }, []);
 
-  const loadPlan = useCallback(async (sku: string) => {
+  const loadPlan = useCallback(async (sku: string, withRecalc = false) => {
     if (!sku.trim()) return;
     setLoading(true);
     setErr(null);
     try {
+      if (withRecalc) {
+        await recalcOperational(sku);
+      }
       const p = await getReplenishmentPlan(sku);
       setPlan(p);
       setPage(1);
+      const [d, pos] = await Promise.all([
+        getDashboardSummary(),
+        listPurchaseOrders(sku).catch(() => ({ total: 0, rows: [] as PurchaseOrder[] })),
+      ]);
+      setDash(d);
+      setPoHistory(pos.rows ?? []);
     } catch (e: unknown) {
       setPlan(null);
       setErr(e instanceof Error ? e.message : String(e));
@@ -237,13 +274,17 @@ export default function Replenishment() {
   const exportPoCsv = () => {
     if (!plan) return;
     const lines = [
-      "sku,date,order_qty,nfe,zone,unit",
+      "type,sku,date,qty,nfe,zone,unit,po_id,status,expected_receipt",
       ...plan.recommendations
         .filter((r) => Number(r.order_qty) > 0)
         .map(
           (r) =>
-            `${plan.sku},${r.date ?? ""},${r.order_qty},${r.nfe},${r.zone ?? ""},${unit}`,
+            `suggested,${plan.sku},${r.date ?? ""},${r.order_qty},${r.nfe},${r.zone ?? ""},${unit},,,`,
         ),
+      ...(plan.operational?.confirmed_pos ?? []).map(
+        (p) =>
+          `confirmed,${plan.sku},${p.order_date ?? ""},${p.qty},,,${p.unit ?? unit},${p.id},confirmed,${p.expected_receipt_date ?? ""}`,
+      ),
     ];
     const blob = new Blob([lines.join("\n")], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
@@ -252,23 +293,94 @@ export default function Replenishment() {
     a.download = `po-${plan.sku}-${plan.today_date ?? "export"}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-    setPoNotice("PO export downloaded.");
+    setPoNotice("PO export downloaded (suggested + confirmed rows).");
   };
 
-  const createPoToday = () => {
-    if (!plan || todayOrderQty <= 0) {
-      setPoNotice("No order quantity recommended for today.");
+  const openCreatePoModal = (ctx?: Partial<PoModalContext>) => {
+    if (!plan) return;
+    const orderDate =
+      ctx?.orderDate ?? plan.today_date ?? new Date().toISOString().slice(0, 10);
+    const suggestedQty = ctx?.suggestedQty ?? todayOrderQty;
+    const qty = suggestedQty > 0 ? Math.ceil(suggestedQty) : 0;
+    setPoQtyInput(qty > 0 ? String(qty) : "");
+    setPoOrderDate(orderDate);
+    setPoModalContext({
+      orderDate,
+      suggestedQty,
+      zone: ctx?.zone ?? todayZone,
+      rowDateLabel: ctx?.rowDateLabel,
+    });
+    setForceCreatePo(false);
+    setPoModalOpen(true);
+  };
+
+  const openCreatePoModalFromRow = (row: ScheduleRow) => {
+    const zone = normZone(row.zone);
+    if (zone !== "RED" && zone !== "YELLOW") return;
+    openCreatePoModal({
+      orderDate: row.date ?? plan?.today_date ?? "",
+      suggestedQty: Number(row.order_qty) || 0,
+      zone,
+      rowDateLabel: row.date ? fmtDateDdMmYy(row.date) : undefined,
+    });
+  };
+
+  const modalSuggestedQty = poModalContext?.suggestedQty ?? todayOrderQty;
+
+  const submitCreatePo = async () => {
+    if (!plan || poSubmitting) return;
+    const qty = Number(poQtyInput);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      setPoNotice("Enter a valid order quantity greater than zero.");
       return;
     }
-    setPoNotice(
-      `PO draft: SKU ${plan.sku} — ${todayOrderQty.toFixed(2)} ${unit} (order date ${fmtDateDdMmYy(plan.today_date)}).`,
-    );
+    if (modalSuggestedQty <= 0 && !forceCreatePo) {
+      setPoNotice("No suggested order for this row. Check “Force create” to proceed anyway.");
+      return;
+    }
+
+    setPoSubmitting(true);
+    setPoNotice(null);
+    setErr(null);
+    try {
+      const draft = await createPurchaseOrder({
+        sku: plan.sku,
+        qty,
+        order_date: poOrderDate || plan.today_date || undefined,
+        notes: "Created from Replenishment",
+      });
+      const result = await confirmPurchaseOrder(draft.id);
+      setPoModalOpen(false);
+      setPoNotice(
+        `PO #${result.po.id} confirmed for ${qty.toFixed(0)} ${unit}. NFE updated to ${result.recalc.nfe.toFixed(2)} ${result.recalc.unit ?? unit} (${result.recalc.zone} zone).`,
+      );
+      await loadPlan(plan.sku, false);
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setPoNotice(msg.includes("already exists") ? `${msg} Cancel or receive the existing PO first.` : msg);
+    } finally {
+      setPoSubmitting(false);
+    }
   };
 
   const totalNeed = dash?.perlu_replenishment ?? 0;
   const redGlobal = dash?.zona_merah ?? 0;
   const yellowGlobal = dash?.zona_kuning ?? Math.max(0, totalNeed - redGlobal);
   const refDate = plan?.today_date ? fmtDateDdMmYy(plan.today_date) : "—";
+
+  const zoneSkuList: SkuZoneSnapshot[] = useMemo(() => {
+    if (!zonePanel || !dash?.sku_by_zone) return [];
+    return dash.sku_by_zone[zonePanel] ?? [];
+  }, [zonePanel, dash?.sku_by_zone]);
+
+  const zonePanelTitle =
+    zonePanel === "RED"
+      ? "Red zone"
+      : zonePanel === "YELLOW"
+        ? "Yellow zone"
+        : zonePanel === "GREEN"
+          ? "Green zone"
+          : "";
 
   return (
     <div className="space-y-5 animate-in fade-in duration-500">
@@ -292,22 +404,117 @@ export default function Replenishment() {
           >
             <span aria-hidden>↓</span> Export PO
           </button>
-          <Link
-            href="/"
-            className="inline-flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-red-900/30 hover:bg-red-500"
-          >
-            <span aria-hidden>⚡</span>
-            Execute all ({totalNeed} SKU)
-          </Link>
         </div>
       </div>
 
+      {poModalOpen && plan ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="po-modal-title"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+            <h2 id="po-modal-title" className="text-lg font-bold text-white">
+              Confirm purchase order
+            </h2>
+            <p className="mt-2 text-sm text-slate-400">
+              SKU <span className="font-mono text-slate-200">{plan.sku}</span>
+            </p>
+            {poModalContext?.rowDateLabel ? (
+              <p className="mt-1 text-sm text-slate-400">
+                Schedule row{" "}
+                <span className="font-mono text-slate-200">{poModalContext.rowDateLabel}</span>
+                {" · "}
+                <span
+                  className={
+                    poModalContext.zone === "RED"
+                      ? "font-semibold text-red-300"
+                      : "font-semibold text-amber-300"
+                  }
+                >
+                  {poModalContext.zone} zone
+                </span>
+              </p>
+            ) : null}
+            <div className="mt-4">
+              <label htmlFor="po-order-date" className="block text-xs text-slate-500 mb-1">
+                Order date
+              </label>
+              <input
+                id="po-order-date"
+                type="date"
+                value={poOrderDate}
+                onChange={(e) => setPoOrderDate(e.target.value)}
+                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
+              />
+              {plan.today_date ? (
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Buffer window starts: {fmtDateDdMmYy(plan.today_date)}
+                </p>
+              ) : null}
+            </div>
+            <div className="mt-4">
+              <label className="block text-xs text-slate-500 mb-1">Order quantity ({unit})</label>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={poQtyInput}
+                onChange={(e) => setPoQtyInput(e.target.value)}
+                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-white"
+              />
+              {modalSuggestedQty > 0 ? (
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Suggested: {modalSuggestedQty.toFixed(0)} {unit}
+                </p>
+              ) : null}
+            </div>
+            {modalSuggestedQty <= 0 ? (
+              <label className="mt-3 flex items-center gap-2 text-xs text-amber-200">
+                <input
+                  type="checkbox"
+                  checked={forceCreatePo}
+                  onChange={(e) => setForceCreatePo(e.target.checked)}
+                  className="rounded border-slate-600"
+                />
+                Force create (no suggested qty for this row)
+              </label>
+            ) : null}
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={poSubmitting}
+                onClick={() => setPoModalOpen(false)}
+                className="rounded-lg border border-slate-600 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={poSubmitting}
+                onClick={() => void submitCreatePo()}
+                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-500 disabled:opacity-50"
+              >
+                {poSubmitting ? "Confirming…" : "Create & confirm PO"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {poNotice ? (
-        <div className="rounded-lg border border-indigo-500/40 bg-indigo-950/30 px-4 py-2 text-sm text-indigo-200">
+        <div
+          className={`rounded-lg border px-4 py-2 text-sm ${
+            poNotice.toLowerCase().includes("confirmed")
+              ? "border-emerald-500/40 bg-emerald-950/30 text-emerald-200"
+              : "border-indigo-500/40 bg-indigo-950/30 text-indigo-200"
+          }`}
+        >
           {poNotice}
           <button
             type="button"
-            className="ml-3 text-xs text-indigo-400 hover:text-white"
+            className="ml-3 text-xs opacity-70 hover:opacity-100"
             onClick={() => setPoNotice(null)}
           >
             Dismiss
@@ -400,11 +607,11 @@ export default function Replenishment() {
         <button
           type="button"
           disabled={!selectedSku || loading}
-          onClick={() => void loadPlan(selectedSku)}
+          onClick={() => void loadPlan(selectedSku, true)}
           className="rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-sm text-slate-200 hover:bg-slate-700 disabled:opacity-40"
-          title="Refresh"
+          title="Recalc NFE and refresh"
         >
-          {loading ? "…" : "↻"} Refresh
+          {loading ? "…" : "↻"} Recalc &amp; refresh
         </button>
       </div>
 
@@ -413,20 +620,26 @@ export default function Replenishment() {
         <SummaryCard
           title="Red zone"
           value={String(dash?.zona_merah ?? skuZoneCounts.red)}
-          subtitle="order urgently"
+          subtitle="click to view SKUs"
           accent="red"
+          active={zonePanel === "RED"}
+          onClick={() => setZonePanel((z) => (z === "RED" ? null : "RED"))}
         />
         <SummaryCard
           title="Yellow zone"
           value={String(dash?.zona_kuning ?? skuZoneCounts.yellow)}
-          subtitle="needs ordering"
+          subtitle="click to view SKUs"
           accent="amber"
+          active={zonePanel === "YELLOW"}
+          onClick={() => setZonePanel((z) => (z === "YELLOW" ? null : "YELLOW"))}
         />
         <SummaryCard
           title="Green zone"
           value={String(dash?.zona_hijau ?? skuZoneCounts.green)}
-          subtitle="safe, skip order"
+          subtitle="click to view SKUs"
           accent="emerald"
+          active={zonePanel === "GREEN"}
+          onClick={() => setZonePanel((z) => (z === "GREEN" ? null : "GREEN"))}
         />
         <SummaryCard
           title="Total order today"
@@ -435,12 +648,30 @@ export default function Replenishment() {
           accent="white"
         />
         <SummaryCard
-          title="Open order"
-          value={String(dash?.open_order ?? 0)}
-          subtitle="already created"
+          title="Confirmed PO"
+          value={String(dash?.confirmed_po_skus ?? 0)}
+          subtitle={
+            openOrderQty > 0
+              ? `${openOrderQty.toFixed(0)} ${unit} on order`
+              : "POs confirmed, not received"
+          }
           accent="slate"
         />
       </div>
+
+      {zonePanel ? (
+        <ZoneSkuPanel
+          zone={zonePanel}
+          title={zonePanelTitle}
+          items={zoneSkuList}
+          selectedSku={selectedSku}
+          onClose={() => setZonePanel(null)}
+          onSelectSku={(sku) => {
+            setSelectedSku(sku);
+            setZoneFilter("ALL");
+          }}
+        />
+      ) : null}
 
       {/* Two columns */}
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
@@ -480,24 +711,27 @@ export default function Replenishment() {
                   <th className="px-5 py-3 font-medium">Date</th>
                   <th className="px-5 py-3 font-medium text-right">Order qty ({unit})</th>
                   <th className="px-5 py-3 font-medium text-right">NFE ({unit})</th>
+                  <th className="px-5 py-3 font-medium text-right">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800/60">
                 {!plan ? (
                   <tr>
-                    <td colSpan={3} className="px-5 py-10 text-center text-slate-500">
+                    <td colSpan={4} className="px-5 py-10 text-center text-slate-500">
                       {loading ? "Loading plan…" : "No active buffer — run pipeline in Analytics."}
                     </td>
                   </tr>
                 ) : pagedRows.length === 0 ? (
                   <tr>
-                    <td colSpan={3} className="px-5 py-10 text-center text-slate-500">
+                    <td colSpan={4} className="px-5 py-10 text-center text-slate-500">
                       No rows for this zone filter.
                     </td>
                   </tr>
                 ) : (
                   pagedRows.map((r, idx) => {
                     const isToday = r.date === plan.today_date;
+                    const rowZone = normZone(r.zone);
+                    const showPoAction = rowZone === "RED" || rowZone === "YELLOW";
                     return (
                       <tr
                         key={`${r.date}-${idx}`}
@@ -537,6 +771,25 @@ export default function Replenishment() {
                               {normZone(r.zone) || "—"}
                             </span>
                           </span>
+                        </td>
+                        <td className="px-5 py-3 text-right">
+                          {showPoAction ? (
+                            <button
+                              type="button"
+                              disabled={poSubmitting}
+                              onClick={() => openCreatePoModalFromRow(r)}
+                              className={`rounded-lg px-2.5 py-1.5 text-[11px] font-semibold text-white shadow-sm disabled:opacity-40 ${
+                                rowZone === "RED"
+                                  ? "bg-red-600 hover:bg-red-500"
+                                  : "bg-amber-600 hover:bg-amber-500"
+                              }`}
+                              title={`Create PO for ${fmtDateDdMmYy(r.date)} (${rowZone} zone)`}
+                            >
+                              Create PO
+                            </button>
+                          ) : (
+                            <span className="text-xs text-slate-600">—</span>
+                          )}
                         </td>
                       </tr>
                     );
@@ -627,13 +880,44 @@ export default function Replenishment() {
 
             <button
               type="button"
-              disabled={!plan || todayOrderQty <= 0}
-              onClick={createPoToday}
+              disabled={!plan || poSubmitting}
+              onClick={() => openCreatePoModal()}
               className="flex w-full items-center justify-center gap-2 rounded-xl bg-red-600 py-3.5 text-sm font-bold text-white shadow-lg shadow-red-900/40 hover:bg-red-500 disabled:opacity-40"
             >
               <span aria-hidden>⚡</span>
-              Create PO {todayOrderQty > 0 ? `${todayOrderQty.toFixed(0)} ${unit}` : ""} now
+              {poSubmitting
+                ? "Processing…"
+                : `Create PO ${todayOrderQty > 0 ? `${todayOrderQty.toFixed(0)} ${unit}` : ""} now`.trim()}
             </button>
+
+            <div className="border-t border-slate-800 pt-3">
+              <button
+                type="button"
+                onClick={() => setShowPoHistory((v) => !v)}
+                className="text-xs font-semibold text-slate-400 hover:text-white"
+              >
+                {showPoHistory ? "Hide" : "Show"} PO history ({poHistory.length})
+              </button>
+              {showPoHistory && poHistory.length > 0 ? (
+                <ul className="mt-2 max-h-40 space-y-1.5 overflow-y-auto text-xs">
+                  {poHistory.map((po) => (
+                    <li
+                      key={po.id}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-800 bg-slate-950/60 px-2 py-1.5"
+                    >
+                      <span className="font-mono text-slate-300">#{po.id}</span>
+                      <span className="capitalize text-slate-400">{po.status}</span>
+                      <span className="font-mono text-white">
+                        {po.qty} {po.unit}
+                      </span>
+                      <span className="text-slate-500">{fmtDateDdMmYy(po.order_date)}</span>
+                    </li>
+                  ))}
+                </ul>
+              ) : showPoHistory ? (
+                <p className="mt-2 text-xs text-slate-500">No purchase orders for this SKU yet.</p>
+              ) : null}
+            </div>
 
             <Link
               href="/analytics"
@@ -662,11 +946,15 @@ function SummaryCard({
   value,
   subtitle,
   accent,
+  onClick,
+  active,
 }: {
   title: string;
   value: string;
   subtitle: string;
   accent: "red" | "amber" | "emerald" | "white" | "slate";
+  onClick?: () => void;
+  active?: boolean;
 }) {
   const valueColor =
     accent === "red"
@@ -685,11 +973,132 @@ function SummaryCard({
           ? "border-emerald-900/30"
           : "border-slate-800";
 
-  return (
-    <div className={`rounded-xl border ${border} bg-slate-900/80 p-4`}>
+  const activeRing =
+    active && accent === "red"
+      ? "ring-2 ring-red-500/60"
+      : active && accent === "amber"
+        ? "ring-2 ring-amber-500/60"
+        : active && accent === "emerald"
+          ? "ring-2 ring-emerald-500/60"
+          : "";
+
+  const className = `rounded-xl border ${border} bg-slate-900/80 p-4 text-left w-full transition-colors ${activeRing} ${
+    onClick
+      ? "hover:bg-slate-800/90 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+      : ""
+  }`;
+
+  const inner = (
+    <>
       <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">{title}</p>
       <p className={`mt-1 text-2xl font-bold tabular-nums ${valueColor}`}>{value}</p>
       <p className="mt-0.5 text-[11px] text-slate-500">{subtitle}</p>
+    </>
+  );
+
+  if (onClick) {
+    return (
+      <button type="button" onClick={onClick} className={className}>
+        {inner}
+      </button>
+    );
+  }
+
+  return <div className={className}>{inner}</div>;
+}
+
+function ZoneSkuPanel({
+  zone,
+  title,
+  items,
+  selectedSku,
+  onClose,
+  onSelectSku,
+}: {
+  zone: ZoneKey;
+  title: string;
+  items: SkuZoneSnapshot[];
+  selectedSku: string;
+  onClose: () => void;
+  onSelectSku: (sku: string) => void;
+}) {
+  const border =
+    zone === "RED"
+      ? "border-red-900/50 bg-red-950/20"
+      : zone === "YELLOW"
+        ? "border-amber-900/40 bg-amber-950/15"
+        : "border-emerald-900/40 bg-emerald-950/15";
+
+  return (
+    <div className={`rounded-xl border ${border} p-4`}>
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-bold text-white">{title}</h3>
+          <p className="text-[11px] text-slate-400">
+            {items.length} SKU on the buffer planning start day (all active buffers)
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onClose}
+          className="rounded-lg border border-slate-600 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+        >
+          Close
+        </button>
+      </div>
+
+      {items.length === 0 ? (
+        <p className="py-4 text-center text-sm text-slate-500">No SKU in this zone.</p>
+      ) : (
+        <div className="max-h-56 overflow-x-auto overflow-y-auto rounded-lg border border-slate-800/80">
+          <table className="w-full text-left text-sm">
+            <thead className="sticky top-0 bg-slate-950 text-[10px] uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-4 py-2 font-medium">SKU</th>
+                <th className="px-4 py-2 font-medium text-right">NFE</th>
+                <th className="px-4 py-2 font-medium text-right">Order qty</th>
+                <th className="px-4 py-2 font-medium text-right">TOY</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/60">
+              {items.map((row) => {
+                const isSelected = row.sku === selectedSku;
+                return (
+                  <tr
+                    key={row.sku}
+                    className={
+                      isSelected ? "bg-blue-950/40" : "cursor-pointer hover:bg-slate-800/40"
+                    }
+                    onClick={() => onSelectSku(row.sku)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onSelectSku(row.sku);
+                      }
+                    }}
+                    tabIndex={0}
+                    role="button"
+                  >
+                    <td className="px-4 py-2 font-mono text-slate-200">{row.sku}</td>
+                    <td className="px-4 py-2 text-right font-mono tabular-nums text-slate-300">
+                      {row.nfe.toFixed(2)}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono tabular-nums text-slate-300">
+                      {row.order_qty > 0 ? row.order_qty.toFixed(0) : "—"}
+                    </td>
+                    <td className="px-4 py-2 text-right font-mono tabular-nums text-slate-500">
+                      {row.toy.toFixed(1)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="mt-2 text-[10px] text-slate-500">
+        Click a row to open that SKU in the schedule below.
+      </p>
     </div>
   );
 }

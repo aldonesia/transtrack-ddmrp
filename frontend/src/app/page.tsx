@@ -19,6 +19,9 @@ type DashboardSummary = {
   zona_merah: number;
   perlu_replenishment: number;
   open_order: number;
+  confirmed_po_skus?: number;
+  open_order_qty?: number;
+  planned_order_skus?: number;
   buffer_active: string | null;
   message?: string | null;
   critical_queue_total?: number;
@@ -184,12 +187,6 @@ export default function Dashboard() {
             <span className="text-xs font-medium text-slate-400">System status</span>
             <span className="text-sm font-semibold text-emerald-400">Active</span>
           </div>
-          <Link
-            href="/replenishment"
-            className="rounded-lg bg-blue-600 px-4 py-2.5 text-center text-sm font-semibold text-white shadow-lg hover:bg-blue-500"
-          >
-            Execute All Orders
-          </Link>
         </div>
       </div>
 
@@ -259,9 +256,15 @@ export default function Dashboard() {
               <p className="mt-1 text-xs text-slate-500">All SKUs — low stock</p>
             </div>
             <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-lg">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Open order</p>
-              <p className="mt-1 text-4xl font-bold tabular-nums text-emerald-400">{data.open_order}</p>
-              <p className="mt-1 text-xs text-slate-500">Orders placed</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Confirmed PO</p>
+              <p className="mt-1 text-4xl font-bold tabular-nums text-emerald-400">
+                {data.confirmed_po_skus ?? data.open_order}
+              </p>
+              <p className="mt-1 text-xs text-slate-500">
+                {data.open_order_qty != null && data.open_order_qty > 0
+                  ? `${data.open_order_qty} units on order`
+                  : "Purchase orders confirmed"}
+              </p>
             </div>
           </div>
 

@@ -2,6 +2,15 @@
 
 **IDAS** = **Inventory Decision Analytic System** (nama produk di UI). Logika perencanaan tetap mengacu DDMRP + notebook hybrid di repo ini.
 
+## Dokumentasi (Markdown)
+
+| Dokumen | Isi |
+|---------|-----|
+| [docs/USER_MANUAL.md](docs/USER_MANUAL.md) | Panduan pengguna aplikasi (UI) |
+| [docs/INTEGRATION_API_MANUAL.md](docs/INTEGRATION_API_MANUAL.md) | API integrasi eksternal (`sku_no`) |
+| [docs/INSTALLATION.md](docs/INSTALLATION.md) | Instalasi Docker, reset DB, impor data awal |
+| [docs/gap_analysis.md](docs/gap_analysis.md) | Analisis gap produk & prioritas backlog |
+
 ## Unit Standar Perhitungan
 
 - Satu unit perencanaan: **PCS / EA** untuk demand, forecast, DDMRP, GA, replenishment, dan dashboard.
@@ -82,21 +91,118 @@ Untuk file yang diekspor dari Excel dengan sel tanggal sebagai angka, **serial h
 - Endpoint baca latest run: `GET /api/analytics/latest-run?sku=<SKU>`
 - Replenishment selalu mengacu ke latest active buffer per SKU.
 
+## Alur pipeline (notebook RUN 2 → 3 → 4)
+
+| RUN | Modul UI | API / layanan | Output |
+|-----|----------|---------------|--------|
+| **2** | Analytics — Forecast | `POST /api/analytics/forecast` atau bagian dari `POST /api/analytics/run` | Model terbaik, metrik, deret forecast |
+| **3** | Analytics — Classify & GA | `POST /api/analytics/optimize` atau `run` | TOR/TOY/TOG, VF/LTF optimal, klasifikasi ADI-CV² |
+| **4** | Replenishment | `GET /api/analytics/replenishment` | Jendela order qty, NFE, zona per hari |
+
+Setelah **run** berhasil, backend menyimpan buffer aktif (`ddmrp_buffer` + `ddmrp_buffer_detail`) dan menginisialisasi state operasional (`sku_operational_state`, OH awal = TOY).
+
+Rencana detail open order: `resources_ext/IMPLEMENTATION_PLAN_OPEN_ORDER.md`.
+
+## Purchase orders & operational NFE (loop operasional)
+
+Setelah buffer aktif, rekomendasi replenishment bisa dikonfirmasi sebagai **purchase order (PO)**. PO mengubah **open order (OP)** dalam perhitungan NFE **tanpa** menjalankan ulang GA.
+
+### Prinsip
+
+```
+NFE = On Hand (OH) + Open Order (OP) − Qualified Demand (QD)
+```
+
+- **TOR / TOY / TOG** — tetap dari hasil RUN 3 terakhir sampai user menjalankan pipeline lagi.
+- **QD** — demand hari ini + forecast horizon H+1…H+DLT (jika > ADU), dari `ForecastRun` + `DailyRecord` (selaras notebook).
+- **OP** — jumlah PO berstatus `confirmed` yang belum diterima (`expected_receipt_date` > hari acuan).
+
+### API Purchase order
+
+Prefix: `/api/purchase-orders`
+
+| Method | Path | Keterangan |
+|--------|------|------------|
+| `POST` | `/` | Buat PO `draft` — body: `{ "sku", "qty", "order_date?", "notes?" }` |
+| `POST` | `/{id}/confirm` | Konfirmasi draft → `confirmed` + recalc NFE |
+| `POST` | `/{id}/receive` | Terima barang — body opsional: `{ "receipt_qty" }` |
+| `POST` | `/{id}/cancel` | Batalkan `draft` atau `confirmed` |
+| `GET` | `/` | List — query: `sku`, `status`, `limit`, `offset` |
+| `GET` | `/{id}` | Detail satu PO |
+
+Aturan bisnis (v1):
+
+- SKU harus punya buffer **Active**.
+- Qty dibulatkan ke MOQ / `pack_size` dari master.
+- `expected_receipt_date = order_date + lead_time` (hari kalender dari master, fallback DLT buffer).
+- Maksimal **satu PO confirmed per SKU per hari order** (409 jika duplikat).
+
+Contoh — buat & konfirmasi:
+
+```bash
+# Draft
+curl -s -X POST http://localhost:8000/api/purchase-orders \
+  -H "Content-Type: application/json" \
+  -d '{"sku":"1000001","qty":171,"notes":"Replenishment"}'
+
+# Confirm (ganti id)
+curl -s -X POST http://localhost:8000/api/purchase-orders/1/confirm
+```
+
+Response confirm menyertakan `recalc` (NFE, zona, `suggested_order_qty`, OH, OP).
+
+### Recalc manual (tanpa GA)
+
+- `POST /api/analytics/recalc-operational?sku=<SKU>`
+- Memperbarui `DDMRPBufferDetail` di jendela buffer aktif dari OH/OP/QD terkini.
+- Dipakai tombol **Recalc & refresh** di halaman Replenishment.
+
+### Replenishment — field `operational`
+
+`GET /api/analytics/replenishment?sku=<SKU>` menambahkan blok:
+
+```json
+"operational": {
+  "on_hand": 196.0,
+  "open_order": 171.0,
+  "qualified_demand": 15.4,
+  "nfe": 58.45,
+  "zone": "YELLOW",
+  "suggested_order_qty": 171.0,
+  "confirmed_pos": [
+    {
+      "id": 1,
+      "qty": 171.0,
+      "order_date": "2024-05-01",
+      "expected_receipt_date": "2024-05-08",
+      "unit": "EA"
+    }
+  ],
+  "unit": "EA"
+}
+```
+
+- `order_qty` per baris di `recommendations` = **saran residual** setelah recalc (bukan qty PO yang sudah dikonfirmasi).
+- UI Replenishment: **Create PO** → modal → `create` + `confirm` → refresh plan & dashboard.
+
+### Tabel database (open order)
+
+| Tabel | Peran |
+|-------|--------|
+| `purchase_order` | PO draft / confirmed / received / cancelled |
+| `sku_operational_state` | OH operasional per SKU (`on_hand`, `as_of_date`, `buffer_id`) |
+
 ## Endpoint Integrasi (SKU No)
 
-Untuk integrasi sistem eksternal, gunakan endpoint berikut:
+Panduan lengkap + contoh cURL: **[docs/INTEGRATION_API_MANUAL.md](docs/INTEGRATION_API_MANUAL.md)**.
 
-- `POST /api/analytics/integration/run`
-  - Body JSON:
-    - `sku_no` (wajib)
-    - `sl_target` (opsional, default `0.95`)
-    - `pop_size` (opsional, default `24`)
-    - `n_gen` (opsional, default `40`)
-    - `include_baseline` (opsional, default `true`)
-- `GET /api/analytics/integration/result?sku_no=<SKU_NO>`
-  - Mengembalikan latest result forecast + optimize untuk SKU tersebut.
-- `GET /api/analytics/integration/replenishment?sku_no=<SKU_NO>`
-  - Mengembalikan rekomendasi replenishment berdasarkan latest active buffer SKU tersebut.
+| Method | Path | Fungsi |
+|--------|------|--------|
+| `POST` | `/api/analytics/integration/run` | Forecast + optimize + buffer aktif |
+| `GET` | `/api/analytics/integration/result?sku_no=<SKU_NO>` | Latest run forecast + optimize |
+| `GET` | `/api/analytics/integration/replenishment?sku_no=<SKU_NO>` | Replenishment + `operational` (OH, OP, NFE, zona) |
+
+Body `integration/run`: `sku_no` (wajib), `sl_target` (default `0.95`), `pop_size` (default `30`), `n_gen` (default `80`), `include_baseline` (default `true`).
 
 ### Contoh JSON — `POST /api/analytics/integration/run`
 
@@ -106,8 +212,8 @@ Request body:
 {
   "sku_no": "1000001",
   "sl_target": 0.95,
-  "pop_size": 24,
-  "n_gen": 40,
+  "pop_size": 30,
+  "n_gen": 80,
   "include_baseline": true
 }
 ```
@@ -203,6 +309,18 @@ Contoh response:
   "buffer_id": 123,
   "today_date": "2026-04-09",
   "leadtime_days": 7,
+  "tor": 58.0,
+  "toy": 196.0,
+  "tog": 340.0,
+  "operational": {
+    "on_hand": 196.0,
+    "open_order": 0.0,
+    "nfe": 58.45,
+    "zone": "YELLOW",
+    "suggested_order_qty": 171.0,
+    "confirmed_pos": [],
+    "unit": "PCS"
+  },
   "recommendations": [
     {
       "date": "2026-04-09",
@@ -254,20 +372,28 @@ Halaman beranda menampilkan ringkasan operasional buffer aktif (**Ringkasan Oper
 - **Sidebar:** brand **IDAS** + subtitle *Inventory Decision Analytic System*, grup menu **Operasional**, item **Beranda & KPI**, **Master Data**, **Master Demand**, **Analytics & Buffer**, **Replenishment** (badge merah = jumlah SKU perlu replenishment). Footer: **Buffer version**.
 - **Header utama:** **Ringkasan Operasional**; subtitle unit tampilan **CTN** + waktu refresh terakhir; **Status sistem** (Aktif); tombol **Eksekusi Semua Order** → `/replenishment`.
 - **Alert merah** jika ada SKU zona `RED`.
-- **Empat kartu KPI:** Total SKU, Zona merah, Perlu replenishment, Open order (angka dari `GET /api/dashboard-summary`).
+- **Empat kartu KPI:** Total SKU, Red zone, Needs replenishment, Confirmed PO (angka dari `GET /api/dashboard-summary`).
+- Halaman **Replenishment:** rekomendasi order, buffer position (TOR/TOY/TOG), **Create PO**, export CSV, riwayat PO.
 - **Tabel SKU prioritas kritis:** kolom **Prioritas** (peringkat) dan **Kode SKU** — hanya SKU zona merah, urut defisit NFE menurun (maks 5 baris + tautan “Lihat semua”).
 - **Kolom kanan:** widget **Status sistem** (scheduler, refresh harian, status nightly, SKU diproses, waktu refresh), **Distribusi zona buffer**, **Rekomendasi cepat**.
 
-Penjelasan KPI (backend):
+Penjelasan KPI (backend, `GET /api/dashboard-summary`):
 
-- `Total SKU`: jumlah buffer aktif (SKU dengan rencana aktif).
-- `Zona Merah`: SKU dengan zona `RED` pada hari referensi buffer.
-- `Perlu Replenishment`: SKU dengan `order_qty > 0` pada hari referensi.
-- `Open Order`: SKU yang punya minimal satu hari dengan `order_qty > 0` dalam window lead time buffer aktif.
+| Field | Arti |
+|-------|------|
+| `total_sku` | Jumlah buffer aktif |
+| `zona_merah` | SKU dengan zona `RED` pada hari start buffer |
+| `zona_kuning` / `zona_hijau` | SKU zona kuning / hijau pada hari start |
+| `perlu_replenishment` | SKU dengan saran order (`order_qty` > 0) pada hari start |
+| `planned_order_skus` | Sama seperti perlu replenishment (saran di buffer) |
+| `confirmed_po_skus` | SKU dengan minimal satu PO `confirmed` di jendela buffer |
+| `open_order_qty` | Total qty PO `confirmed` di jendela tersebut |
+| `open_order` | **Deprecated** — alias ke `planned_order_skus` (kompatibilitas lama) |
 
-### Catatan Unit pada Dashboard
+### Catatan unit
 
-- Subtitle beranda mockup IDAS menampilkan **CTN** sebagai label unit tampilan replenishment; perhitungan backend dan modul lain tetap **PCS / EA** sampai kebijakan karton diaktifkan di seluruh stack.
+- Semua perhitungan memakai **unit perencanaan** dari `SKUMaster.unit` (PCS, EA, CTN, …) **tanpa konversi karton**.
+- Label di UI mengikuti unit dari API (`operational.unit`, `replenishment.unit`).
 
 ### Arti Status Nightly
 
@@ -314,4 +440,29 @@ Keterangan:
 4. Ambil `parity-snapshot` dari app.
 5. Bandingkan dengan output notebook `resources_ext/DDMRP_Hybrid_Algorithm_Last_Version.ipynb` (jalankan sel yang sama untuk SKU dan periode yang setara).
 6. Isi tabel parity dan tandai PASS/FAIL.
+
+## Docker & reset database
+
+Development (API di host, frontend hot reload):
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+```
+
+Reset DB + impor ulang `Data 2.xlsx` (dari root repo):
+
+```bash
+./docker-reset-db.sh
+```
+
+Setelah reset: upload master/demand lewat UI atau jalankan `backend/scripts/import_data2_xlsx.py`, lalu **Analytics → Run full pipeline** per SKU sebelum uji Replenishment / PO.
+
+## Langkah uji open order (manual)
+
+1. Impor data & jalankan `POST /api/analytics/run` untuk satu SKU.
+2. Buka Replenishment, pilih SKU — pastikan ada saran order & NFE.
+3. **Create PO** → konfirmasi qty → cek pesan sukses dan `operational.open_order` naik.
+4. `POST /api/analytics/recalc-operational?sku=...` atau **Recalc & refresh** — tabel & buffer bar ikut terbarui.
+5. (Opsional) `POST /api/purchase-orders/{id}/receive` — OH naik, OP turun setelah recalc.
+6. Dashboard: `confirmed_po_skus` dan `open_order_qty` konsisten dengan PO di DB.
 

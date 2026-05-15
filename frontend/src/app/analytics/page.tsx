@@ -210,6 +210,8 @@ export default function Analytics() {
       .then((d) => {
         if (!d.latest_run) {
           setLatestRunAt(null);
+          setForecast(null);
+          setOptimize(null);
           return;
         }
         setForecast(d.latest_run.forecast);
@@ -218,6 +220,8 @@ export default function Analytics() {
       })
       .catch(() => {
         setLatestRunAt(null);
+        setForecast(null);
+        setOptimize(null);
       });
   }, [selectedSku]);
 
@@ -226,7 +230,7 @@ export default function Analytics() {
     getActiveBufferDetail(selectedSku)
       .then((d) => setActiveBuffer(d))
       .catch(() => setActiveBuffer(null));
-  }, [selectedSku, optimize, forecast]);
+  }, [selectedSku]);
 
   useEffect(() => {
     setShowAllBufferRows(false);
@@ -251,6 +255,16 @@ export default function Analytics() {
     getActiveBufferDetail(selectedSku)
       .then((d) => setActiveBuffer(d))
       .catch(() => setActiveBuffer(null));
+  };
+
+  const onSelectSku = (sku: string) => {
+    setSelectedSku(sku);
+    setForecast(null);
+    setOptimize(null);
+    setLatestRunAt(null);
+    setParitySnapshot(null);
+    setActiveBuffer(null);
+    setError(null);
   };
 
   const onRunForecast = async () => {
@@ -389,7 +403,7 @@ export default function Analytics() {
           <label className="block text-xs text-slate-500 mb-1">SKU</label>
           <select
             value={selectedSku === "" ? "" : selectedSku}
-            onChange={(e) => setSelectedSku(e.target.value ? e.target.value : "")}
+            onChange={(e) => onSelectSku(e.target.value ? e.target.value : "")}
             className="bg-slate-950 border border-slate-700 text-sm rounded-lg px-3 py-2 text-white min-w-[200px]"
           >
             {skuList.length === 0 && <option value="">—</option>}

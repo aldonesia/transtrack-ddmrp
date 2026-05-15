@@ -38,3 +38,13 @@ def migrate_sku_master_columns(engine: Engine) -> None:
             continue
         with engine.begin() as conn:
             conn.execute(text(f"ALTER TABLE sku_master ADD COLUMN {col} {sql_type}"))
+
+
+def migrate_open_order_tables(engine: Engine) -> None:
+    """Ensure PO / operational state tables exist (create_all in main.py is primary)."""
+    from models import Base
+
+    Base.metadata.create_all(bind=engine, tables=[
+        t for name, t in Base.metadata.tables.items()
+        if name in ("purchase_order", "sku_operational_state")
+    ])
