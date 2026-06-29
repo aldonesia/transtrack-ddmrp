@@ -2,9 +2,19 @@
 
 Dokumen ini untuk **tim yang menghubungkan ERP atau sistem lain ke IDAS** (middleware, job terjadwal, skrip integrasi).
 
-**Aplikasi web:** [https://transtrack-ddmrp.skom.my.id](https://transtrack-ddmrp.skom.my.id)  
-**Alamat API (semua contoh di bawah):** `https://transtrack-ddmrp.skom.my.id`  
-**Awalan path:** `/api/analytics`
+**Aplikasi web (buka di browser):** [https://transtrack-ddmrp.skom.my.id](https://transtrack-ddmrp.skom.my.id)  
+**Alamat API (semua contoh perintah di bawah):** `https://transtrack-ddmrp-api.skom.my.id`  
+**Awalan path API:** `/api/analytics`
+
+| Untuk apa | URL yang dipakai |
+|-----------|------------------|
+| Login, Master Data, menu aplikasi | `https://transtrack-ddmrp.skom.my.id` |
+| Panggilan API (curl, ERP, integrasi) | `https://transtrack-ddmrp-api.skom.my.id` |
+| Pengujian di komputer sendiri (Docker) | `http://localhost:8000` |
+
+> **Penting:** Jangan memanggil `/api/...` lewat alamat aplikasi web — Anda akan mendapat **Not Found (404)** karena itu bukan server API.
+
+Dokumentasi API lengkap (Swagger): [https://transtrack-ddmrp-api.skom.my.id/docs](https://transtrack-ddmrp-api.skom.my.id/docs)
 
 Penjelasan konsep buffer v2 untuk pengguna bisnis: [USER_MANUAL_V2.md](./USER_MANUAL_V2.md).  
 Integrasi **versi 1** (lama): [INTEGRATION_API_MANUAL.md](./INTEGRATION_API_MANUAL.md).
@@ -37,7 +47,7 @@ Versi 1 API **tetap ada** dan tidak berubah — gunakan v2 hanya jika Anda senga
 **Penting:** di Mac/Linux, bungkus URL dengan tanda kutip jika ada tanda `?`:
 
 ```bash
-curl "https://transtrack-ddmrp.skom.my.id/api/analytics/integration/v2/result?sku_no=100008503"
+curl "https://transtrack-ddmrp-api.skom.my.id/api/analytics/integration/v2/result?sku_no=100008503"
 ```
 
 ---
@@ -54,7 +64,7 @@ curl "https://transtrack-ddmrp.skom.my.id/api/analytics/integration/v2/result?sk
 
 ## 1. Menjalankan buffer v2
 
-**URL:** `POST https://transtrack-ddmrp.skom.my.id/api/analytics/integration/v2/run`  
+**URL:** `POST https://transtrack-ddmrp-api.skom.my.id/api/analytics/integration/v2/run`  
 **Header:** `Content-Type: application/json`
 
 ### Isi permintaan (body)
@@ -122,12 +132,12 @@ Cocok untuk dianalisis di Excel.
 
 ```bash
 # Jalankan dan dapatkan JSON
-curl -s -X POST "https://transtrack-ddmrp.skom.my.id/api/analytics/integration/v2/run" \
+curl -s -X POST "https://transtrack-ddmrp-api.skom.my.id/api/analytics/integration/v2/run" \
   -H "Content-Type: application/json" \
   -d '{"sku_no":"100008503","pop_size":30,"n_gen":80}'
 
 # Jalankan dan simpan CSV
-curl -s -X POST "https://transtrack-ddmrp.skom.my.id/api/analytics/integration/v2/run?csv=true" \
+curl -s -X POST "https://transtrack-ddmrp-api.skom.my.id/api/analytics/integration/v2/run?csv=true" \
   -H "Content-Type: application/json" \
   -d '{"sku_no":"100008503","pop_size":30,"n_gen":80}' \
   -o daily_simulation.csv
@@ -137,15 +147,16 @@ curl -s -X POST "https://transtrack-ddmrp.skom.my.id/api/analytics/integration/v
 
 | Kode | Artinya |
 |------|---------|
+| **404** + halaman HTML | URL salah — memanggil **aplikasi web**, bukan API | Pakai `https://transtrack-ddmrp-api.skom.my.id` |
 | **400** | Initial Inventory kosong di master, atau parameter tidak valid |
-| **404** | SKU tidak ada / belum ada data penjualan |
+| **404** + JSON | SKU tidak ada / belum ada data penjualan |
 | **500** | Gagal di tengah proses — lihat pesan di body respons |
 
 ---
 
 ## 2. Membaca hasil terakhir (tanpa hitung ulang)
 
-**URL:** `GET https://transtrack-ddmrp.skom.my.id/api/analytics/integration/v2/result?sku_no=<SKU>`
+**URL:** `GET https://transtrack-ddmrp-api.skom.my.id/api/analytics/integration/v2/result?sku_no=<SKU>`
 
 | Parameter | Wajib? | Keterangan |
 |-----------|--------|------------|
@@ -153,11 +164,11 @@ curl -s -X POST "https://transtrack-ddmrp.skom.my.id/api/analytics/integration/v
 | `csv` | Tidak | `true` → unduh CSV simulasi harian |
 
 ```bash
-curl -s "https://transtrack-ddmrp.skom.my.id/api/analytics/integration/v2/result?sku_no=100008503"
+curl -s "https://transtrack-ddmrp-api.skom.my.id/api/analytics/integration/v2/result?sku_no=100008503"
 
-curl -s "https://transtrack-ddmrp.skom.my.id/api/analytics/integration/v2/result?sku_no=100008503" | jq -r '.simulation_summary_text'
+curl -s "https://transtrack-ddmrp-api.skom.my.id/api/analytics/integration/v2/result?sku_no=100008503" | jq -r '.simulation_summary_text'
 
-curl -s "https://transtrack-ddmrp.skom.my.id/api/analytics/integration/v2/result?sku_no=100008503&csv=true" \
+curl -s "https://transtrack-ddmrp-api.skom.my.id/api/analytics/integration/v2/result?sku_no=100008503&csv=true" \
   -o simulasi.csv
 ```
 
@@ -169,12 +180,12 @@ Jika hanya pernah v1, respons **404** — jalankan dulu `POST …/v2/run`.
 
 ## 3. Saran replenishment (order harian)
 
-**URL:** `GET https://transtrack-ddmrp.skom.my.id/api/analytics/integration/v2/replenishment?sku_no=<SKU>`
+**URL:** `GET https://transtrack-ddmrp-api.skom.my.id/api/analytics/integration/v2/replenishment?sku_no=<SKU>`
 
 Mengembalikan buffer v2 yang **aktif** (versi diawali `v2-`), posisi operasional hari ini, dan daftar rekomendasi order per tanggal.
 
 ```bash
-curl -s "https://transtrack-ddmrp.skom.my.id/api/analytics/integration/v2/replenishment?sku_no=100008503"
+curl -s "https://transtrack-ddmrp-api.skom.my.id/api/analytics/integration/v2/replenishment?sku_no=100008503"
 ```
 
 Cuplikan respons:

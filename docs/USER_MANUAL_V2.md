@@ -1,12 +1,33 @@
 # Panduan pengguna — Perencanaan buffer v2 (IDAS)
 
-**Aplikasi IDAS:** [https://transtrack-ddmrp.skom.my.id](https://transtrack-ddmrp.skom.my.id)
+Panduan ini menjelaskan **cara kerja buffer versi 2 (v2)** dalam bahasa sederhana.
 
-Panduan ini menjelaskan **cara kerja buffer versi 2 (v2)** dalam bahasa sederhana. Jika Anda mengintegrasikan IDAS dengan ERP lewat program/API, baca juga [Panduan API integrasi v2](./INTEGRATION_API_MANUAL_V2.md).
+| Untuk apa | Alamat |
+|-----------|--------|
+| **Buka aplikasi** (Master Data, menu) | [https://transtrack-ddmrp.skom.my.id](https://transtrack-ddmrp.skom.my.id) |
+| **Integrasi API** (tim IT / ERP) | [https://transtrack-ddmrp-api.skom.my.id](https://transtrack-ddmrp-api.skom.my.id) |
+
+Tim IT yang menghubungkan ERP: baca [Panduan API integrasi v2](./INTEGRATION_API_MANUAL_V2.md).
 
 ---
 
-## 1. Buffer v2 — apa bedanya?
+## 1. Dua “pintu” ke IDAS — jangan tertukar
+
+Bayangkan IDAS punya **dua pintu**:
+
+1. **Pintu depan (aplikasi web)** — untuk manusia: login, unggah master, lihat dashboard.  
+   Alamat: **transtrack-ddmrp.skom.my.id**
+
+2. **Pintu belakang (API)** — untuk program ERP / skrip otomatis: jalankan perhitungan buffer, ambil hasil.  
+   Alamat: **transtrack-ddmrp-api.skom.my.id**
+
+Buffer **v2** dijalankan lewat **pintu belakang (API)**. Jika tim IT memakai alamat aplikasi web untuk memanggil API, biasanya muncul pesan **Not Found** — bukan karena fitur belum ada, tetapi karena alamatnya salah.
+
+> **Catatan:** Menu **Analytics & Buffer** di aplikasi web saat ini masih memakai mesin **versi 1**. Buffer **v2** belum ada tombol khusus di halaman Analytics; data master yang Anda isi di web tetap dipakai oleh v2.
+
+---
+
+## 2. Buffer v2 — apa bedanya?
 
 Bayangkan buffer persediaan seperti **tangki air**:
 
@@ -14,7 +35,7 @@ Bayangkan buffer persediaan seperti **tangki air**:
 - **Kuning (TOY)** — mulai waspada.
 - **Hijau (TOG)** — area aman; stok cukup.
 
-**Buffer v2** menghitung ukuran tangki itu dengan cara yang lebih cerdas:
+**Buffer v2** menghitung ukuran tangki dengan cara yang lebih cerdas:
 
 1. Sistem melihat **pola penjualan** barang Anda (lancar, jarang, atau tidak menentu).
 2. Menyesuaikan **cara simulasi** — tidak semua barang diperlakukan sama.
@@ -23,21 +44,19 @@ Bayangkan buffer persediaan seperti **tangki air**:
 
 Hasilnya: rencana buffer dan simulasi harian yang lebih mendekati kondisi lapangan.
 
-> **Catatan:** Menu **Analytics & Buffer** di aplikasi web saat ini masih memakai mesin **versi 1**. Buffer **v2** dijalankan lewat **integrasi API** (biasanya oleh tim IT/ERP). Data master yang Anda isi di aplikasi tetap dipakai oleh v2.
-
 ---
 
-## 2. Siapa yang perlu membaca panduan ini?
+## 3. Siapa yang perlu membaca panduan ini?
 
 | Peran | Yang perlu dilakukan |
 |-------|----------------------|
-| **Admin master data** | Mengisi kolom baru di Master SKU (bagian 3) |
-| **Perencana persediaan** | Memahami arti ringkasan hasil (bagian 5) |
-| **Tim ERP / IT** | Menjalankan API — lihat [INTEGRATION_API_MANUAL_V2.md](./INTEGRATION_API_MANUAL_V2.md) |
+| **Admin master data** | Mengisi kolom baru di Master SKU (bagian 4) |
+| **Perencana persediaan** | Memahami arti ringkasan hasil (bagian 6) |
+| **Tim ERP / IT** | Memanggil API di **transtrack-ddmrp-api.skom.my.id** — [INTEGRATION_API_MANUAL_V2.md](./INTEGRATION_API_MANUAL_V2.md) |
 
 ---
 
-## 3. Data master — tiga kolom penting untuk v2
+## 4. Data master — tiga kolom penting untuk v2
 
 Sebelum buffer v2 bisa dijalankan untuk suatu SKU, master harus lengkap. Selain kolom biasa (kode barang, lead time, MOQ, harga, dll.), pastikan **tiga kolom ini** terisi:
 
@@ -53,16 +72,16 @@ Tanpa angka stok awal, sistem tidak tahu dari mana simulasi harian dimulai — s
 
 ### Cara mengisi lewat aplikasi
 
-1. Buka [https://transtrack-ddmrp.skom.my.id/master](https://transtrack-ddmrp.skom.my.id/master) (**Master Data**).
+1. Buka [Master Data](https://transtrack-ddmrp.skom.my.id/master).
 2. Unggah file Excel/CSV master **21 kolom**, atau edit baris per SKU.
 3. Periksa setiap SKU yang akan diproses v2: kolom **Initial Inventory** harus berisi angka ≥ 0.
-4. Buka [https://transtrack-ddmrp.skom.my.id/master/demand](https://transtrack-ddmrp.skom.my.id/master/demand) (**Master Demand**) dan pastikan riwayat penjualan harian sudah ada.
+4. Buka [Master Demand](https://transtrack-ddmrp.skom.my.id/master/demand) dan pastikan riwayat penjualan harian sudah ada.
 
 **Contoh SKU untuk uji:** `100008503` — Initial Inventory = 2, Target Percentile = 98%.
 
 ---
 
-## 4. Dua jenis pola barang (ringkas)
+## 5. Dua jenis pola barang (ringkas)
 
 Sistem mengelompokkan barang berdasarkan seberapa **sering** dan **menentu** penjualannya:
 
@@ -75,9 +94,9 @@ Anda tidak perlu menghitung ini manual — sistem memilih otomatis setelah melih
 
 ---
 
-## 5. Apa yang Anda terima setelah buffer v2 dijalankan?
+## 6. Apa yang Anda terima setelah buffer v2 dijalankan?
 
-Tim integrasi menjalankan proses lewat API. Untuk Anda sebagai pengguna, yang penting adalah **dua jenis output**:
+Tim integrasi menjalankan proses lewat API (**bukan** lewat tombol Analytics di web). Untuk Anda sebagai pengguna, yang penting adalah **dua jenis output**:
 
 ### A. Ringkasan angka (seperti laporan satu halaman)
 
@@ -117,11 +136,11 @@ Bisa diekspor ke **Excel (CSV)** untuk analisa manual — tim IT memakai opsi `c
 
 ### Rekomendasi order harian (replenishment)
 
-Setelah buffer v2 tersimpan, sistem bisa memberi **saran order per hari** untuk jendela lead time — sama seperti menu Replenishment, tetapi dari rencana **v2** (stok awal operasional mengikuti **Initial Inventory** Anda).
+Setelah buffer v2 tersimpan, sistem bisa memberi **saran order per hari** untuk jendela lead time — mirip menu Replenishment di web, tetapi dari rencana **v2** (stok awal operasional mengikuti **Initial Inventory** Anda).
 
 ---
 
-## 6. Versi 1 atau versi 2?
+## 7. Versi 1 atau versi 2?
 
 | Situasi Anda | Pakai |
 |--------------|-------|
@@ -134,16 +153,18 @@ Keduanya bisa jalan bersamaan untuk SKU berbeda. Rencana v2 di sistem ditandai v
 
 ---
 
-## 7. Masalah umum
+## 8. Masalah umum
 
 | Yang Anda lihat | Kemungkinan penyebab | Apa yang dilakukan |
 |-----------------|----------------------|-------------------|
+| **Not Found** saat tim IT menjalankan v2 | API dipanggil lewat alamat **aplikasi web** | Pakai **https://transtrack-ddmrp-api.skom.my.id** (lihat panduan API) |
 | Proses ditolak, pesan tentang **initial inventory** | Kolom Initial Inventory kosong di master | Isi di Master Data, lalu jalankan ulang |
 | Tidak ada hasil v2 | Belum pernah dijalankan v2 untuk SKU itu | Minta tim IT jalankan API v2 |
 | Rekomendasi order tidak muncul (v2) | Buffer aktif masih dari versi 1 | Jalankan ulang buffer v2 untuk SKU tersebut |
 | Angka buffer terasa aneh | Data demand belum lengkap atau stok awal salah | Periksa Master Demand dan Initial Inventory |
+| Mencari tombol “Analytics v2” di web | Belum tersedia di UI | v2 hanya lewat API untuk saat ini |
 
-Untuk detail teknis API (kode error, parameter), lihat [INTEGRATION_API_MANUAL_V2.md](./INTEGRATION_API_MANUAL_V2.md).
+Untuk detail teknis API (kode error, parameter, contoh perintah), lihat [INTEGRATION_API_MANUAL_V2.md](./INTEGRATION_API_MANUAL_V2.md).
 
 ---
 
