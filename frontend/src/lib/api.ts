@@ -70,6 +70,9 @@ export type MasterSku = {
   currency?: string | null;
   holding_cost_day_idr?: number | null;
   penalty_per_unit_idr?: number | null;
+  initial_inventory?: number | null;
+  qmax?: number | null;
+  target_percentile?: number | null;
 };
 
 export async function getDatasetStatus(): Promise<DatasetStatus> {

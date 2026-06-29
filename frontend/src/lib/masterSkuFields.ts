@@ -18,6 +18,9 @@ export const MASTER_SKU_EXCEL_COLUMNS = [
   "Lost Sale Rate/Each",
   "Penalty/unit (IDR)",
   "Logistic Cost/Order",
+  "Initial Inventory",
+  "Qmax",
+  "Target Percentile",
 ] as const;
 
 export const MASTER_SKU_EXCEL_COLUMNS_SEMICOLON = MASTER_SKU_EXCEL_COLUMNS.join(";");
@@ -57,12 +60,15 @@ export type MasterSkuFormKey =
   | "holding_cost_day_idr"
   | "lost_sale_rate_each"
   | "penalty_per_unit_idr"
-  | "logistic_cost_order";
+  | "logistic_cost_order"
+  | "initial_inventory"
+  | "qmax"
+  | "target_percentile";
 
 export type MasterSkuFieldDef = {
   key: MasterSkuFormKey;
   label: string;
-  kind: "text" | "int" | "money" | "rate" | "unit";
+  kind: "text" | "int" | "money" | "rate" | "unit" | "percent";
   required?: boolean;
   step?: number;
   hint?: string;
@@ -100,4 +106,25 @@ export const MASTER_SKU_FORM_FIELDS: MasterSkuFieldDef[] = [
   { key: "lost_sale_rate_each", label: "Lost Sale Rate/Each", kind: "rate", required: true, step: 0.01 },
   { key: "penalty_per_unit_idr", label: "Penalty/unit (IDR)", kind: "money" },
   { key: "logistic_cost_order", label: "Logistic Cost/Order", kind: "money", required: true },
+  {
+    key: "initial_inventory",
+    label: "Initial Inventory",
+    kind: "int",
+    required: true,
+    hint: "On-hand quantity at simulation start (required for buffer v2).",
+  },
+  {
+    key: "qmax",
+    label: "Qmax",
+    kind: "int",
+    hint: "Maximum order quantity cap; leave empty if unlimited.",
+  },
+  {
+    key: "target_percentile",
+    label: "Target Percentile",
+    kind: "percent",
+    required: true,
+    step: 0.01,
+    hint: "LTD percentile for DDMRP conditional (e.g. 0.98 = 98%).",
+  },
 ];

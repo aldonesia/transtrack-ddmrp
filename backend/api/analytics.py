@@ -10,7 +10,7 @@ import json
 
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -23,6 +23,8 @@ from services.hybrid_pipeline import (
     run_buffer_optimization,
     run_forecast_for_api,
 )
+from services.buffer_v2.pipeline import run_buffer_optimization_v2
+from services.buffer_v2.response import build_v2_notebook_json, daily_simulation_csv_response
 
 router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 
@@ -54,7 +56,12 @@ def _sanitize(obj: Any) -> Any:
     return obj
 
 
-def _forecast_to_response(result: Dict[str, Any], unit: str = "EA") -> Dict[str, Any]:
+def _forecast_to_response(
+    result: Dict[str, Any],
+    unit: str = "EA",
+    *,
+    include_predictions: bool = True,
+) -> Dict[str, Any]:
     cmp_df = result["comparison"].copy()
     cmp_df = cmp_df.replace({np.nan: None})
     test_dates = result["test_dates"]
@@ -63,18 +70,15 @@ def _forecast_to_response(result: Dict[str, Any], unit: str = "EA") -> Dict[str,
     else:
         date_list = [str(d) for d in test_dates]
 
-    preds = {k: np.asarray(v, dtype=float).tolist() for k, v in result["predictions"].items()}
-
     train_size = result["train_size"]
     series_clean = np.asarray(result["series_clean"], dtype=float)
 
-    return {
+    payload: Dict[str, Any] = {
         "sku": result["sku"],
         "unit": unit,
         "best_model": result["best_model"],
         "best_metrics": _sanitize(result["best_metrics"]),
         "comparison": cmp_df.to_dict("records"),
-        "predictions": preds,
         "actual_test": np.asarray(result["actual_test"], dtype=float).tolist(),
         "test_dates": date_list,
         "train_size": int(train_size),
@@ -82,6 +86,10 @@ def _forecast_to_response(result: Dict[str, Any], unit: str = "EA") -> Dict[str,
         "series_clean": series_clean.tolist(),
         "n_points": len(series_clean),
     }
+    if include_predictions:
+        preds = {k: np.asarray(v, dtype=float).tolist() for k, v in result["predictions"].items()}
+        payload["predictions"] = preds
+    return payload
 
 
 class ForecastBody(BaseModel):
@@ -212,6 +220,8 @@ def _save_buffer_plan_and_details(
     ltf_opt: float,
     optimized_kpi: Dict[str, Any],
     optimized_detail_records: list[dict[str, Any]],
+    version_prefix: str = "v",
+    seed_on_hand: Optional[float] = None,
 ) -> int:
     """
     Persist DDMRP (DDMRP + GA) result for replenishment lookup.
@@ -234,7 +244,7 @@ def _save_buffer_plan_and_details(
     # Archive older active plans for this SKU.
     _ensure_active_buffer_archived(db, sku)
 
-    version = datetime.utcnow().strftime("v%Y.%m.%d.%H%M%S")
+    version = f"{version_prefix}{datetime.utcnow().strftime('%Y.%m.%d.%H%M%S')}"
     # If GA returned optimized vf/ltf in classification-less place, prefer it later.
     tor = float(optimized_kpi.get("tor") or classification.get("tor") or 0)
     toy = float(optimized_kpi.get("toy") or classification.get("toy") or 0)
@@ -269,7 +279,7 @@ def _save_buffer_plan_and_details(
                 buffer_id=buf.id,
                 date=rd,
                 order_qty=float(r.get("order_qty") or 0),
-                nfe=float(r.get("NFE") or 0),
+                nfe=float(r.get("nfe") or r.get("NFE") or 0),
                 zone=r.get("zone"),
             )
         )
@@ -278,7 +288,7 @@ def _save_buffer_plan_and_details(
 
     from services.operational_nfe import seed_operational_state_for_buffer
 
-    seed_operational_state_for_buffer(db, sku, buf)
+    seed_operational_state_for_buffer(db, sku, buf, on_hand=seed_on_hand)
 
     return int(buf.id)
 
@@ -370,6 +380,162 @@ def integration_run(body: IntegrationRunBody, db: Session = Depends(get_db)):
     return {
         "sku_no": body.sku_no,
         "status": "ok",
+        **result,
+    }
+
+
+def _post_run_v2(body: IntegrationRunBody, db: Session) -> Dict[str, Any]:
+    data = _get_data(db)
+    sku_s = str(body.sku_no).strip()
+    params = get_sku_params(data, sku_s)
+    if params.get("initial_inventory") is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"SKU {sku_s}: initial_inventory wajib diisi di master (Data 2 June).",
+        )
+
+    try:
+        forecast_result = run_forecast_for_api(data, sku_s)
+        out = run_buffer_optimization_v2(
+            data,
+            sku_s,
+            sl_target=body.sl_target,
+            pop_size=body.pop_size,
+            n_gen=body.n_gen,
+            include_baseline=body.include_baseline,
+            forecast_result=forecast_result,
+            return_detail=True,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    optimized_detail_records = out.pop("optimized_detail", None) or []
+    classification = out.get("classification") or {}
+    optimized_kpi = (out.get("optimized") or {}).get("kpi") or {}
+    optimization = out.get("optimization") or {}
+
+    buffer_id = _save_buffer_plan_and_details(
+        db,
+        sku_s,
+        classification=classification,
+        fv_opt=float(optimization.get("vf_opt") or 0),
+        ltf_opt=float(optimization.get("ltf_opt") or 0),
+        optimized_kpi=optimized_kpi,
+        optimized_detail_records=optimized_detail_records,
+        version_prefix="v2-",
+        seed_on_hand=float(params["initial_inventory"]),
+    )
+
+    response_opt = _sanitize(out)
+    unit = str(params.get("unit") or out.get("unit") or "EA").upper()
+    forecast_response = _forecast_to_response(forecast_result, unit=unit, include_predictions=False)
+    latest_run_id = _save_latest_run(db, sku_s, forecast_response, response_opt)
+    daily_simulation = response_opt.get("daily_simulation") or []
+    daily_simulation_csv = response_opt.get("daily_simulation_csv") or ""
+    return {
+        "buffer_id": buffer_id,
+        "latest_run_id": latest_run_id,
+        "forecast": forecast_response,
+        "optimize": response_opt,
+        "daily_simulation": daily_simulation,
+        "daily_simulation_csv": daily_simulation_csv,
+    }
+
+
+@router.post("/integration/v2/run")
+def integration_v2_run(
+    body: IntegrationRunBody,
+    csv: bool = Query(
+        False,
+        description="If true (`?csv` or `?csv=true`), return daily simulation as CSV file instead of JSON.",
+    ),
+    db: Session = Depends(get_db),
+):
+    """Integrasi buffer v2 — klasifikasi, method-aware GA, actual demand QD."""
+    result = _post_run_v2(body, db)
+    sku_s = str(body.sku_no).strip()
+    if csv:
+        csv_text = result.get("daily_simulation_csv") or ""
+        if not csv_text:
+            raise HTTPException(status_code=404, detail=f"No daily simulation CSV for SKU {sku_s}.")
+        return daily_simulation_csv_response(sku_s, csv_text)
+    return _sanitize(
+        build_v2_notebook_json(
+            sku_s,
+            result.get("optimize") or {},
+            buffer_id=result.get("buffer_id"),
+            latest_run_id=result.get("latest_run_id"),
+        )
+    )
+
+
+@router.get("/integration/v2/result")
+def integration_v2_result(
+    sku_no: Optional[str] = None,
+    csv: bool = Query(
+        False,
+        description="If true (`?csv` or `?csv=true`), return daily simulation as CSV file instead of JSON.",
+    ),
+    db: Session = Depends(get_db),
+):
+    if not sku_no or not str(sku_no).strip():
+        raise HTTPException(status_code=400, detail="Missing `sku_no` query param.")
+    sku_s = str(sku_no).strip()
+    row = (
+        db.query(ForecastRun)
+        .filter(ForecastRun.sku == sku_s)
+        .order_by(ForecastRun.run_at.desc(), ForecastRun.id.desc())
+        .first()
+    )
+    if not row:
+        if csv:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No v2 integration run found for SKU {sku_s}. Call POST /integration/v2/run first.",
+            )
+        return {"sku_no": sku_s, "status": "ok", "api_version": "v2", "latest_run": None}
+    optimize_payload = json.loads(row.optimize_json or "{}")
+    if optimize_payload.get("api_version") != "v2":
+        raise HTTPException(
+            status_code=404,
+            detail=f"No v2 integration run found for SKU {sku_s}. Call POST /integration/v2/run first.",
+        )
+    if csv:
+        csv_text = optimize_payload.get("daily_simulation_csv") or ""
+        if not csv_text:
+            raise HTTPException(status_code=404, detail=f"No daily simulation CSV for SKU {sku_s}.")
+        return daily_simulation_csv_response(sku_s, csv_text)
+    payload = build_v2_notebook_json(sku_s, optimize_payload)
+    payload["latest_run"] = {
+        "id": int(row.id),
+        "run_at": row.run_at.isoformat() if row.run_at else None,
+        "unit": row.unit or "PCS",
+    }
+    return _sanitize(payload)
+
+
+@router.get("/integration/v2/replenishment")
+def integration_v2_replenishment(
+    sku_no: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    if not sku_no or not str(sku_no).strip():
+        raise HTTPException(status_code=400, detail="Missing `sku_no` query param.")
+    result = get_replenishment(sku=sku_no, db=db)
+    version = str(result.get("version") or "")
+    if not version.startswith("v2-"):
+        raise HTTPException(
+            status_code=404,
+            detail=f"No active v2 buffer for SKU {sku_no}. Run POST /integration/v2/run first.",
+        )
+    return {
+        "sku_no": str(sku_no).strip(),
+        "status": "ok",
+        "api_version": "v2",
         **result,
     }
 

@@ -32,6 +32,9 @@ def migrate_sku_master_columns(engine: Engine) -> None:
         ("lost_sale_rate_each", float_t),
         ("logistic_cost_order", float_t),
         ("pack_size", int_t),
+        ("initial_inventory", float_t),
+        ("qmax", int_t),
+        ("target_percentile", float_t),
     ]
     for col, sql_type in adds:
         if col in existing:

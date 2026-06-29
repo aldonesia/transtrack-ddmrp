@@ -34,11 +34,19 @@ Struktur penting:
 ddmrp/
 ├── backend/          # FastAPI + SQLAlchemy
 ├── frontend/         # Next.js
-├── resources_ext/    # Data 2.xlsx, notebook acuan
+├── resources_ext/    # Data 2 June, notebook acuan buffer v2
 ├── docker-compose.yml
 ├── docker-compose.dev.yml
-└── docker-reset-db.sh
+├── docker-reset-db.sh
+└── docker-seed-master.sh   # Seed master SKU (Data 2 June.csv)
 ```
+
+**Dokumen v2 (buffer klasifikasi):**
+
+| File | Isi |
+|------|-----|
+| [INTEGRATION_API_MANUAL_V2.md](./INTEGRATION_API_MANUAL_V2.md) | API integrasi `/integration/v2/*` |
+| [USER_MANUAL_V2.md](./USER_MANUAL_V2.md) | Master 21 kolom, konsep buffer v2 |
 
 ---
 
@@ -89,6 +97,39 @@ docker compose exec backend python scripts/import_data2_xlsx.py --fresh
 ```
 
 File default: `resources_ext/Data 2.xlsx`.
+
+**Opsi C — Dataset Data 2 June (buffer v2, disarankan)**
+
+Master 21 kolom + demand dari workbook June:
+
+```bash
+# Stack harus sudah running
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+
+# 1) Kosongkan DB (opsional, lingkungan uji bersih)
+./docker-reset-db.sh
+
+# 2) Seed master dari CSV (45 SKU, termasuk initial_inventory)
+./docker-seed-master.sh
+
+# 3) Import demand
+docker compose exec -T backend python scripts/import_data2_xlsx.py \
+  --xlsx "/app/resources_ext/Data 2 June.xlsx"
+```
+
+| Path host | Path container |
+|-----------|----------------|
+| `./resources_ext/Data 2 June.csv` | `/app/resources_ext/Data 2 June.csv` |
+| `./resources_ext/Data 2 June.xlsx` | `/app/resources_ext/Data 2 June.xlsx` |
+
+**Penting:** jalankan seeder **di dalam container** (`./docker-seed-master.sh`), bukan `python scripts/seed_data2_june.py` di host tanpa `DATABASE_URL` Postgres — data akan masuk SQLite lokal.
+
+Opsi seeder:
+
+```bash
+./docker-seed-master.sh --dry-run
+docker compose exec -T backend python scripts/seed_data2_june.py --fresh-master
+```
 
 ---
 
@@ -200,8 +241,42 @@ curl -s http://localhost:8000/api/dashboard-summary | head
 # Dataset
 curl -s http://localhost:8000/api/analytics/dataset-status
 
-# Tes unit backend (dari host)
+# Master June (setelah docker-seed-master.sh)
+curl -s http://localhost:8000/api/master/skus | python3 -c \
+  "import json,sys; print('SKU count', len(json.load(sys.stdin)['skus']))"
+```
+
+### Verifikasi buffer v2 (integrasi)
+
+Prasyarat: master + demand sudah terisi (Opsi C di atas).
+
+```bash
+# Run v2 (n_gen minimal 5)
+curl -s -X POST "http://localhost:8000/api/analytics/integration/v2/run" \
+  -H "Content-Type: application/json" \
+  -d '{"sku_no":"100008503","pop_size":8,"n_gen":5}' \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('simulation_summary',{}).get('Method'), d.get('buffer_id'))"
+
+# Ringkasan teks seperti notebook
+curl -s "http://localhost:8000/api/analytics/integration/v2/result?sku_no=100008503" \
+  | python3 -c "import json,sys; print(json.load(sys.stdin).get('simulation_summary_text','')[:200])"
+
+# CSV harian → Excel
+curl -s "http://localhost:8000/api/analytics/integration/v2/result?sku_no=100008503&csv=true" \
+  -o /tmp/daily_simulation.csv && head -2 /tmp/daily_simulation.csv
+```
+
+Panduan lengkap: [INTEGRATION_API_MANUAL_V2.md](./INTEGRATION_API_MANUAL_V2.md).
+
+### Unit test backend
+
+```bash
 cd backend && python3 -m unittest discover -s tests -p 'test_*.py' -v
+# Parity v2 vs notebook (Data 2 June, ~2 menit)
+cd backend && python3 -m unittest tests.test_buffer_v2_parity -v
+
+# Regresi integrasi v1 (setelah buffer v2)
+cd backend && python3 -m unittest tests.test_integration_v1_regression -v
 ```
 
 ---
@@ -211,7 +286,10 @@ cd backend && python3 -m unittest discover -s tests -p 'test_*.py' -v
 | Gejala | Solusi |
 |--------|--------|
 | UI tidak bisa panggil API | Pastikan pakai `docker-compose.dev.yml` dan buka UI di `localhost:3001` |
-| `No active buffer` di Replenishment | Jalankan **Analytics → Run full pipeline** untuk SKU tersebut |
+| `No active buffer` di Replenishment | Jalankan **Analytics → Run full pipeline** (v1) atau `POST /integration/v2/run` (v2) |
+| v2 run HTTP 400 `initial_inventory` | Jalankan `./docker-seed-master.sh` |
+| v2 replenishment 404 | Buffer aktif masih v1 — run `POST /integration/v2/run` |
+| `zsh: no matches found` pada curl | Quote URL: `curl "http://localhost:8000/...?sku_no=..."` |
 | Port 5432 bentrok | Ubah mapping port di `docker-compose.yml` atau hentikan Postgres lokal |
 | Perubahan `NEXT_PUBLIC_*` tidak terlihat | Rebuild image frontend (`--no-cache`) |
 
@@ -219,6 +297,8 @@ cd backend && python3 -m unittest discover -s tests -p 'test_*.py' -v
 
 ## Dokumen terkait
 
-- [USER_MANUAL.md](./USER_MANUAL.md) — panduan pengguna aplikasi
-- [INTEGRATION_API_MANUAL.md](./INTEGRATION_API_MANUAL.md) — API integrasi untuk sistem eksternal
+- [USER_MANUAL.md](./USER_MANUAL.md) — panduan pengguna aplikasi (UI v1)
+- [USER_MANUAL_V2.md](./USER_MANUAL_V2.md) — buffer v2, master 21 kolom
+- [INTEGRATION_API_MANUAL.md](./INTEGRATION_API_MANUAL.md) — API integrasi v1
+- [INTEGRATION_API_MANUAL_V2.md](./INTEGRATION_API_MANUAL_V2.md) — API integrasi v2
 - [../README.md](../README.md) — referensi teknis ringkas

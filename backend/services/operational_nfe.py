@@ -170,6 +170,8 @@ def ensure_operational_state(
     sku: str,
     buf: DDMRPBuffer,
     as_of: date,
+    *,
+    on_hand: Optional[float] = None,
 ) -> SkuOperationalState:
     state = db.query(SkuOperationalState).filter(SkuOperationalState.sku == sku).first()
     if state and int(state.buffer_id) == int(buf.id):
@@ -178,7 +180,7 @@ def ensure_operational_state(
         db.delete(state)
         db.flush()
 
-    oh = float(buf.toy or 0.0)
+    oh = float(on_hand) if on_hand is not None else float(buf.toy or 0.0)
     state = SkuOperationalState(
         sku=sku,
         as_of_date=as_of,
@@ -191,15 +193,21 @@ def ensure_operational_state(
     return state
 
 
-def seed_operational_state_for_buffer(db: Session, sku: str, buf: DDMRPBuffer) -> None:
-    """P2: initialize OH=TOY when a new active buffer is saved from the pipeline."""
+def seed_operational_state_for_buffer(
+    db: Session,
+    sku: str,
+    buf: DDMRPBuffer,
+    *,
+    on_hand: Optional[float] = None,
+) -> None:
+    """Initialize operational OH when a new active buffer is saved (default OH=TOY)."""
     if not buf.start_date:
         return
     existing = db.query(SkuOperationalState).filter(SkuOperationalState.sku == sku).first()
     if existing:
         db.delete(existing)
         db.flush()
-    ensure_operational_state(db, sku, buf, buf.start_date)
+    ensure_operational_state(db, sku, buf, buf.start_date, on_hand=on_hand)
 
 
 def build_recalc_summary(

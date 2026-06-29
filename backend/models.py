@@ -24,6 +24,9 @@ class SKUMaster(Base):
     Lost Sale Rate/Each → lost_sale_rate_each
     Penalty/unit (IDR) → penalty_per_unit_idr
     Logistic Cost/Order → logistic_cost_order
+    Initial Inventory → initial_inventory
+    Qmax → qmax
+    Target Percentile → target_percentile
     (Status is UI-only default Active, not in standard import template.)
     """
     __tablename__ = "sku_master"
@@ -53,6 +56,10 @@ class SKUMaster(Base):
     holding_cost_rate_day = Column(Float, nullable=True)  # fraction × harga = hold cost / unit / day
     lost_sale_rate_each = Column(Float, nullable=True)
     logistic_cost_order = Column(Float, nullable=True)
+
+    initial_inventory = Column(Float, nullable=True)
+    qmax = Column(Integer, nullable=True)
+    target_percentile = Column(Float, nullable=True)
 
 class DDMRPBuffer(Base):
     __tablename__ = "ddmrp_buffer"

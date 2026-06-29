@@ -31,6 +31,9 @@ MASTER_SKU_EXCEL_COLUMNS: tuple[str, ...] = (
     "Lost Sale Rate/Each",
     "Penalty/unit (IDR)",
     "Logistic Cost/Order",
+    "Initial Inventory",
+    "Qmax",
+    "Target Percentile",
 )
 
 # Normalized keys (after _normalize_column_map) — must all be present in upload file
@@ -68,7 +71,10 @@ def master_sku_template_sample_rows() -> list[dict[str, Any]]:
             "Holding Cost/day (IDR)": 23774.51,
             "Lost Sale Rate/Each": 0.3,
             "Penalty/unit (IDR)": 14264706.0,
-            "Logistic Cost/Order": 50000.0,
+            "Logistic Cost/Order": 100000.0,
+            "Initial Inventory": 4,
+            "Qmax": 1,
+            "Target Percentile": "98%",
         },
         {
             "Material Number": "100004822",
@@ -88,7 +94,10 @@ def master_sku_template_sample_rows() -> list[dict[str, Any]]:
             "Holding Cost/day (IDR)": "",
             "Lost Sale Rate/Each": 0.3,
             "Penalty/unit (IDR)": "",
-            "Logistic Cost/Order": 50000.0,
+            "Logistic Cost/Order": 100000.0,
+            "Initial Inventory": 1,
+            "Qmax": 1,
+            "Target Percentile": "98%",
         },
     ]
 
@@ -114,6 +123,13 @@ def sku_master_row_to_excel(r: Any) -> dict[str, Any]:
         "Lost Sale Rate/Each": r.lost_sale_rate_each,
         "Penalty/unit (IDR)": getattr(r, "penalty_per_unit_idr", None),
         "Logistic Cost/Order": r.logistic_cost_order,
+        "Initial Inventory": getattr(r, "initial_inventory", None),
+        "Qmax": getattr(r, "qmax", None),
+        "Target Percentile": (
+            f"{float(getattr(r, 'target_percentile', 0.95) or 0.95) * 100:.0f}%"
+            if getattr(r, "target_percentile", None) is not None
+            else "95%"
+        ),
     }
 
 
@@ -230,6 +246,95 @@ def _float_cell(row: pd.Series, col: str) -> Optional[float]:
     return float(x)
 
 
+def _parse_money_value(val: Any) -> float:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        raise ValueError("nilai harga kosong")
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        return float(val)
+    s = str(val).strip()
+    if not s or s.lower() in ("nan", "none"):
+        raise ValueError("nilai harga kosong")
+    s = s.replace("$", "").replace(",", "").strip()
+    return float(s)
+
+
+def _parse_qmax_value(val: Any) -> Optional[int]:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    s = str(val).strip()
+    if not s or s.lower() in ("nan", "none", "null"):
+        return None
+    n = int(float(pd.to_numeric(s, errors="raise")))
+    return n if n >= 1 else None
+
+
+def _parse_percentile_value(val: Any, default: float = 0.95) -> float:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return default
+    s = str(val).strip()
+    if not s or s.lower() in ("nan", "none"):
+        return default
+    if s.endswith("%"):
+        return float(s[:-1].strip()) / 100.0
+    n = float(pd.to_numeric(s, errors="raise"))
+    if n > 1.0:
+        return n / 100.0
+    return n
+
+
+def _parse_initial_inventory_value(val: Any) -> float:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        raise ValueError("Initial Inventory kosong")
+    n = float(pd.to_numeric(val, errors="raise"))
+    if n < 0:
+        raise ValueError("Initial Inventory harus >= 0")
+    return n
+
+
+def read_master_upload_dataframe(path: str) -> pd.DataFrame:
+    """Load master SKU from semicolon CSV (Data 2 June) or Excel."""
+    p = str(path).lower()
+    if p.endswith(".csv"):
+        return pd.read_csv(path, sep=";", encoding="utf-8-sig")
+    return pd.read_excel(path, sheet_name="sku_master")
+
+
+def _optional_int(val: Any) -> Optional[int]:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    return int(val)
+
+
+def sku_master_payload_from_parsed(row: Any) -> dict[str, Any]:
+    """ORM upsert payload from parsed master row (Series or dict)."""
+    if hasattr(row, "to_dict"):
+        row = row.to_dict()
+    return {
+        "group": row["group"],
+        "nama_item": row.get("nama_item") or row["group"],
+        "unit": row.get("unit") or "EA",
+        "status": row.get("status") or "Active",
+        "lead_time": int(row["lead_time"]),
+        "harga": float(row["harga"]),
+        "purchase_price": float(row["purchase_price"]),
+        "holding_cost_rate_day": float(row["holding_cost_rate_day"]),
+        "lost_sale_rate_each": float(row["lost_sale_rate_each"]),
+        "logistic_cost_order": float(row["logistic_cost_order"]),
+        "moq": int(row["moq"]),
+        "pack_size": 1,
+        "criticality": row.get("criticality"),
+        "abc_class": row.get("abc_class"),
+        "xyz_class": row.get("xyz_class"),
+        "vendor_type": row.get("vendor_type"),
+        "currency": row.get("currency"),
+        "holding_cost_day_idr": row.get("holding_cost_day_idr"),
+        "penalty_per_unit_idr": row.get("penalty_per_unit_idr"),
+        "initial_inventory": float(row["initial_inventory"]),
+        "qmax": _optional_int(row.get("qmax")),
+        "target_percentile": float(row.get("target_percentile") or 0.95),
+    }
+
+
 def _required_master_column_keys() -> list[str]:
     return list(MASTER_SKU_NORMALIZED_KEYS)
 
@@ -259,8 +364,8 @@ def _parse_master_sku_row(row: pd.Series) -> dict[str, Any]:
     moq = int(pd.to_numeric(row["moq"], errors="raise"))
     if moq <= 0:
         raise ValueError("MOQ harus > 0")
-    sales_price = float(pd.to_numeric(row["sales price"], errors="raise"))
-    purchase_price = float(pd.to_numeric(row["purchase price"], errors="raise"))
+    sales_price = _parse_money_value(row["sales price"])
+    purchase_price = _parse_money_value(row["purchase price"])
     holding_cost_rate_day = float(pd.to_numeric(row["holding cost rate/day"], errors="raise"))
     lost_sale_rate_each = float(pd.to_numeric(row["lost sale rate/each"], errors="raise"))
     logistic_cost_order = float(pd.to_numeric(row["logistic cost/order"], errors="raise"))
@@ -291,6 +396,9 @@ def _parse_master_sku_row(row: pd.Series) -> dict[str, Any]:
         "currency": _str_cell(row, "currency") or None,
         "holding_cost_day_idr": _float_cell(row, "holding cost/day (idr)"),
         "penalty_per_unit_idr": _float_cell(row, "penalty/unit (idr)"),
+        "initial_inventory": _parse_initial_inventory_value(row.get("initial inventory")),
+        "qmax": _parse_qmax_value(row.get("qmax")),
+        "target_percentile": _parse_percentile_value(row.get("target percentile")),
     }
 
 

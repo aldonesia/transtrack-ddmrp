@@ -1,4 +1,4 @@
-"""Master SKU Excel column parity (18 headers)."""
+"""Master SKU Excel column parity (21 headers)."""
 from __future__ import annotations
 
 import unittest
@@ -18,15 +18,15 @@ from services.master_upload_parse import (
 
 
 class TestMasterSkuColumns(unittest.TestCase):
-    def test_template_has_18_columns(self):
-        self.assertEqual(len(MASTER_SKU_EXCEL_COLUMNS), 18)
+    def test_template_has_21_columns(self):
+        self.assertEqual(len(MASTER_SKU_EXCEL_COLUMNS), 21)
         row = master_sku_template_sample_rows()[0]
         for h in MASTER_SKU_EXCEL_COLUMNS:
             self.assertIn(h, row)
 
     def test_required_keys_match_excel_headers(self):
         self.assertEqual(_required_master_column_keys(), list(MASTER_SKU_NORMALIZED_KEYS))
-        self.assertEqual(len(MASTER_SKU_NORMALIZED_KEYS), 18)
+        self.assertEqual(len(MASTER_SKU_NORMALIZED_KEYS), 21)
 
     def test_coerce_full_header_row(self):
         row = master_sku_template_sample_rows()[0]
@@ -36,7 +36,8 @@ class TestMasterSkuColumns(unittest.TestCase):
         self.assertEqual(tidy.iloc[0]["sku"], "100004821")
         self.assertEqual(tidy.iloc[0]["group"], "Spare Part")
         self.assertEqual(tidy.iloc[0]["harga"], 47549019.0)
-        self.assertEqual(tidy.iloc[0]["moq"], 1)
+        self.assertEqual(tidy.iloc[0]["initial_inventory"], 4.0)
+        self.assertAlmostEqual(tidy.iloc[0]["target_percentile"], 0.98)
 
     def test_lead_time_days_header_normalizes(self):
         df = pd.DataFrame([{"Lead Time_Days": 7}])

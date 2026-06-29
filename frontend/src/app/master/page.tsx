@@ -67,6 +67,9 @@ function masterRowToCsvRecord(r: MasterSku): Record<string, string | number> {
     "Lost Sale Rate/Each": r.lost_sale_rate_each ?? 0,
     "Penalty/unit (IDR)": Math.round(Number(r.penalty_per_unit_idr ?? 0)),
     "Logistic Cost/Order": Math.round(Number(r.logistic_cost_order ?? 0)),
+    "Initial Inventory": Math.round(Number(r.initial_inventory ?? 0)),
+    Qmax: r.qmax ?? "",
+    "Target Percentile": `${Math.round(Number(r.target_percentile ?? 0.95) * 100)}%`,
   };
 }
 
@@ -111,6 +114,9 @@ type SkuForm = {
   lost_sale_rate_each: number;
   penalty_per_unit_idr: number;
   logistic_cost_order: number;
+  initial_inventory: number;
+  qmax: number | "";
+  target_percentile: number;
   target_sl: number;
   status: "Active" | "Nonaktif";
 };
@@ -134,6 +140,9 @@ const emptyForm: SkuForm = {
   lost_sale_rate_each: 0.15,
   penalty_per_unit_idr: 0,
   logistic_cost_order: 750000,
+  initial_inventory: 0,
+  qmax: "",
+  target_percentile: 0.95,
   target_sl: 0.95,
   status: "Active",
 };
@@ -162,6 +171,9 @@ function rowToForm(r: MasterSku): SkuForm {
     lost_sale_rate_each: Number(r.lost_sale_rate_each ?? 0),
     penalty_per_unit_idr: Math.round(Number(r.penalty_per_unit_idr ?? 0)),
     logistic_cost_order: Math.round(Number(r.logistic_cost_order ?? 0)),
+    initial_inventory: Math.round(Number(r.initial_inventory ?? 0)),
+    qmax: r.qmax != null && r.qmax > 0 ? Math.round(Number(r.qmax)) : "",
+    target_percentile: Number(r.target_percentile ?? 0.95),
     target_sl: Number(r.target_sl ?? 0.95),
     status: st === "Nonaktif" ? "Nonaktif" : "Active",
   };
@@ -325,6 +337,9 @@ export default function MasterData() {
         lost_sale_rate_each: Number(form.lost_sale_rate_each),
         penalty_per_unit_idr: Math.round(Number(form.penalty_per_unit_idr)),
         logistic_cost_order: Math.round(Number(form.logistic_cost_order)),
+        initial_inventory: Math.max(0, Math.round(Number(form.initial_inventory))),
+        qmax: form.qmax === "" ? null : Math.max(1, Math.round(Number(form.qmax))),
+        target_percentile: Number(form.target_percentile),
         target_sl: Number(form.target_sl),
         status: form.status,
       });
@@ -492,6 +507,32 @@ export default function MasterData() {
           </div>
         );
       }
+      if (field.key === "qmax") {
+        return (
+          <div key={field.key}>
+            <label htmlFor={id} className="block text-xs font-medium text-slate-400 mb-1">
+              {field.label}
+            </label>
+            <input
+              id={id}
+              type="number"
+              min={1}
+              step={1}
+              placeholder="Unlimited"
+              className="w-full bg-slate-950 border border-slate-700 text-sm rounded-lg px-3 py-2 text-white"
+              value={form.qmax === "" ? "" : form.qmax}
+              onChange={(e) => {
+                const v = e.target.value;
+                setForm((f) => ({
+                  ...f,
+                  qmax: v === "" ? "" : Math.max(1, Math.round(Number(v))),
+                }));
+              }}
+            />
+            {field.hint && <p className="text-[11px] text-slate-600 mt-1">{field.hint}</p>}
+          </div>
+        );
+      }
       if (field.kind === "text") {
         return textInput(
           id,
@@ -509,8 +550,14 @@ export default function MasterData() {
         setNum,
         {
           step:
-            field.step ?? (field.kind === "money" || field.kind === "int" ? 1 : 0.000001),
+            field.step ??
+            (field.kind === "percent"
+              ? 0.01
+              : field.kind === "money" || field.kind === "int"
+                ? 1
+                : 0.000001),
           min: 0,
+          max: field.kind === "percent" ? 1 : undefined,
           hint: field.hint,
         }
       );
@@ -773,7 +820,7 @@ export default function MasterData() {
               <form onSubmit={submitSku} className="flex flex-col flex-1 min-h-0">
                 <div className="overflow-y-auto px-5 py-4 space-y-3 flex-1">
                   <p className="text-xs text-slate-500">
-                    Fields follow the Excel template <span className="font-mono">sku_master</span> (18 columns).
+                    Fields follow the Excel template <span className="font-mono">sku_master</span> (21 columns).
                   </p>
                   {renderMasterSkuFields()}
                   <div className="pt-2 border-t border-slate-800">

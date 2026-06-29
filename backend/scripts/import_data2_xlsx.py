@@ -37,7 +37,11 @@ from models import (  # noqa: E402
     SKUMaster,
 )
 from schema_migrate import migrate_sku_master_columns  # noqa: E402
-from services.master_upload_parse import _coerce_demand_upload, _coerce_master_sku_upload  # noqa: E402
+from services.master_upload_parse import (  # noqa: E402
+    _coerce_demand_upload,
+    _coerce_master_sku_upload,
+    sku_master_payload_from_parsed,
+)
 
 
 def _default_xlsx() -> Path:
@@ -68,27 +72,7 @@ def import_workbook(db: Session, xlsx: Path, *, fresh: bool) -> dict[str, int]:
     inserted_m = updated_m = 0
     for _, row in tidy_m.iterrows():
         sku = str(row["sku"]).strip()
-        payload = {
-            "group": row["group"],
-            "nama_item": row.get("nama_item") or row["group"],
-            "unit": row.get("unit") or "pcs",
-            "status": row.get("status") or "Active",
-            "lead_time": int(row["lead_time"]),
-            "harga": float(row["harga"]),
-            "purchase_price": float(row["purchase_price"]),
-            "holding_cost_rate_day": float(row["holding_cost_rate_day"]),
-            "lost_sale_rate_each": float(row["lost_sale_rate_each"]),
-            "logistic_cost_order": float(row["logistic_cost_order"]),
-            "moq": int(row["moq"]),
-            "pack_size": 1,
-            "criticality": row.get("criticality"),
-            "abc_class": row.get("abc_class"),
-            "xyz_class": row.get("xyz_class"),
-            "vendor_type": row.get("vendor_type"),
-            "currency": row.get("currency"),
-            "holding_cost_day_idr": row.get("holding_cost_day_idr"),
-            "penalty_per_unit_idr": row.get("penalty_per_unit_idr"),
-        }
+        payload = sku_master_payload_from_parsed(row)
         existing = db.query(SKUMaster).filter(SKUMaster.sku == sku).first()
         if existing:
             for k, v in payload.items():

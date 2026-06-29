@@ -32,6 +32,9 @@ def _master_row_dict(m: SKUMaster) -> Dict[str, Any]:
         "MOQ": int(m.moq or 1),
         "Material Group": str(m.group or m.nama_item or ""),
         "Unit": str(m.unit or "pcs"),
+        "Initial Inventory": getattr(m, "initial_inventory", None),
+        "Qmax": getattr(m, "qmax", None),
+        "Target Percentile": getattr(m, "target_percentile", None),
     }
 
 

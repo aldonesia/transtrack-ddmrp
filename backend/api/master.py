@@ -34,6 +34,7 @@ from services.master_upload_parse import (
     _str_cell,
     demand_template_sample_rows,
     master_sku_template_sample_rows,
+    sku_master_payload_from_parsed,
     sku_master_row_to_excel,
 )
 
@@ -129,6 +130,9 @@ class SKUMasterIn(BaseModel):
     currency: Optional[str] = None
     holding_cost_day_idr: Optional[float] = Field(default=None, ge=0)
     penalty_per_unit_idr: Optional[float] = Field(default=None, ge=0)
+    initial_inventory: Optional[float] = Field(default=None, ge=0)
+    qmax: Optional[int] = Field(default=None, ge=1)
+    target_percentile: Optional[float] = Field(default=0.95, ge=0, le=1)
 
 
 def _effective_moq(m: Optional[int]) -> int:
@@ -315,6 +319,9 @@ def list_master_skus(db: Session = Depends(get_db)):
                 "currency": getattr(r, "currency", None),
                 "holding_cost_day_idr": getattr(r, "holding_cost_day_idr", None),
                 "penalty_per_unit_idr": getattr(r, "penalty_per_unit_idr", None),
+                "initial_inventory": getattr(r, "initial_inventory", None),
+                "qmax": getattr(r, "qmax", None),
+                "target_percentile": getattr(r, "target_percentile", None),
             }
             for r in rows
         ]
@@ -360,6 +367,9 @@ def create_or_update_sku(body: SKUMasterIn, db: Session = Depends(get_db)):
         currency=body.currency,
         holding_cost_day_idr=body.holding_cost_day_idr,
         penalty_per_unit_idr=body.penalty_per_unit_idr,
+        initial_inventory=body.initial_inventory,
+        qmax=body.qmax,
+        target_percentile=body.target_percentile if body.target_percentile is not None else 0.95,
     )
     db.add(row)
     db.commit()
@@ -404,27 +414,7 @@ async def upload_master_sku(
     for _, row in tidy.iterrows():
         sku = str(row["sku"]).strip()
         existing = db.query(SKUMaster).filter(SKUMaster.sku == sku).first()
-        payload = {
-            "group": row["group"],
-            "nama_item": row.get("nama_item") or row["group"],
-            "unit": row.get("unit") or "EA",
-            "status": row.get("status") or "Active",
-            "lead_time": int(row["lead_time"]),
-            "harga": float(row["harga"]),
-            "purchase_price": float(row["purchase_price"]),
-            "holding_cost_rate_day": float(row["holding_cost_rate_day"]),
-            "lost_sale_rate_each": float(row["lost_sale_rate_each"]),
-            "logistic_cost_order": float(row["logistic_cost_order"]),
-            "moq": int(row["moq"]),
-            "pack_size": 1,
-            "criticality": row.get("criticality"),
-            "abc_class": row.get("abc_class"),
-            "xyz_class": row.get("xyz_class"),
-            "vendor_type": row.get("vendor_type"),
-            "currency": row.get("currency"),
-            "holding_cost_day_idr": row.get("holding_cost_day_idr"),
-            "penalty_per_unit_idr": row.get("penalty_per_unit_idr"),
-        }
+        payload = sku_master_payload_from_parsed(row)
         if existing:
             for k, v in payload.items():
                 setattr(existing, k, v)

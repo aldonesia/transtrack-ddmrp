@@ -11,6 +11,8 @@ from typing import Any, Dict, Optional, Union
 
 import pandas as pd
 
+from services.master_upload_parse import _parse_percentile_value, _parse_qmax_value
+
 _SKU_KEY = Union[int, str]
 
 
@@ -164,4 +166,13 @@ def get_sku_params(data: Dict[str, pd.DataFrame], sku: _SKU_KEY) -> Dict[str, An
         "penalty_per_unit": round(penalty_unit, 2),
         "order_cost": float(row["Logistic Cost/Order"]),
         "moq": moq_each,
+        "initial_inventory": (
+            float(pd.to_numeric(row["Initial Inventory"], errors="coerce"))
+            if "Initial Inventory" in row and pd.notna(row["Initial Inventory"])
+            else None
+        ),
+        "qmax": _parse_qmax_value(row.get("Qmax")) if "Qmax" in row.index else None,
+        "target_percentile": _parse_percentile_value(
+            row.get("Target Percentile") if "Target Percentile" in row.index else None
+        ),
     }
