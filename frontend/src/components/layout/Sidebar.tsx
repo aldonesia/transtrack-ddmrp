@@ -15,6 +15,7 @@ const NAV = [
   { name: "Master Demand", href: "/master/demand" },
   { name: "Analytics & Buffer", href: "/analytics" },
   { name: "Replenishment", href: "/replenishment", badgeKey: "perlu_replenishment" as const },
+  { name: "Purchase Orders", href: "/purchase-orders" },
 ] as const;
 
 function linkActive(pathname: string, href: string): boolean {

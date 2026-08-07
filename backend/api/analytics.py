@@ -314,11 +314,14 @@ def _save_latest_run(
     return int(row.id)
 
 
-@router.post("/run")
-def post_run(body: RunBody, db: Session = Depends(get_db)):
-    data = _get_data(db)
-    sku_s = str(body.sku).strip()
+def _sku_uses_forecast(db: Session, sku_s: str) -> bool:
+    master = db.query(SKUMaster).filter(SKUMaster.sku == sku_s).first()
+    if master is None:
+        return True
+    return getattr(master, "use_forecast", True) is not False
 
+
+def _run_v1(data: Dict[str, Any], sku_s: str, body: RunBody, db: Session) -> Dict[str, Any]:
     try:
         forecast_result = run_forecast_for_api(data, sku_s)
         out = run_buffer_optimization(
@@ -362,6 +365,100 @@ def post_run(body: RunBody, db: Session = Depends(get_db)):
         "forecast": forecast_response,
         "optimize": response_opt,
     }
+
+
+def _run_v2_as_v1_shape(data: Dict[str, Any], sku_s: str, body: RunBody, db: Session) -> Dict[str, Any]:
+    """Run buffer v2 (actual-demand simulation, no forecast dependency for QD) but
+    reshape the response to the v1 contract (`optimize.optimized.{fv_opt,ltf_opt,kpi}`,
+    flat `optimize.baseline`, TOR/TOY/TOG folded into `classification`) so the existing
+    Analytics & Buffer UI — built against v1's shape — renders it without changes.
+    Used when the SKU's `use_forecast` flag is off.
+    """
+    params = get_sku_params(data, sku_s)
+    if params.get("initial_inventory") is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"SKU {sku_s}: initial_inventory is required in master data to run without forecast (buffer v2).",
+        )
+
+    try:
+        forecast_result = run_forecast_for_api(data, sku_s)
+        out = run_buffer_optimization_v2(
+            data,
+            sku_s,
+            sl_target=body.sl_target,
+            pop_size=body.pop_size,
+            n_gen=body.n_gen,
+            include_baseline=body.include_baseline,
+            forecast_result=forecast_result,
+            return_detail=True,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    optimized_detail_records = out.pop("optimized_detail", None) or []
+    classification = dict(out.get("classification") or {})
+    optimization = out.get("optimization") or {}
+    buffer_kpi = out.get("buffer") or {}
+    classification.update(
+        {
+            "tor": buffer_kpi.get("tor"),
+            "toy": buffer_kpi.get("toy"),
+            "tog": buffer_kpi.get("tog"),
+            "bzr": buffer_kpi.get("bzr"),
+            "moq": params.get("moq"),
+        }
+    )
+    optimized_kpi = (out.get("optimized") or {}).get("kpi") or {}
+    fv_opt = float(optimization.get("vf_opt") or 0)
+    ltf_opt = float(optimization.get("ltf_opt") or 0)
+
+    buffer_id = _save_buffer_plan_and_details(
+        db,
+        sku_s,
+        classification=classification,
+        fv_opt=fv_opt,
+        ltf_opt=ltf_opt,
+        optimized_kpi=optimized_kpi,
+        optimized_detail_records=optimized_detail_records,
+        version_prefix="v2-",
+        seed_on_hand=float(params["initial_inventory"]),
+    )
+
+    baseline = out.get("baseline") or {}
+    v1_shaped_out = {
+        "sku": sku_s,
+        "unit": out.get("unit"),
+        "classification": classification,
+        "forecast_best_model": out.get("forecast_best_model"),
+        "forecast_metrics": out.get("forecast_metrics"),
+        "baseline": baseline.get("kpi") if baseline else None,
+        "optimized": {"fv_opt": fv_opt, "ltf_opt": ltf_opt, "kpi": optimized_kpi},
+        "ga_history_tail": optimization.get("ga_history_tail"),
+        "api_version": "v2",
+    }
+
+    response_opt = _sanitize(v1_shaped_out)
+    unit = str(params.get("unit") or out.get("unit") or "EA").upper()
+    forecast_response = _forecast_to_response(forecast_result, unit=unit)
+    latest_run_id = _save_latest_run(db, sku_s, forecast_response, response_opt)
+    return {
+        "buffer_id": buffer_id,
+        "latest_run_id": latest_run_id,
+        "forecast": forecast_response,
+        "optimize": response_opt,
+    }
+
+
+@router.post("/run")
+def post_run(body: RunBody, db: Session = Depends(get_db)):
+    data = _get_data(db)
+    sku_s = str(body.sku).strip()
+    if _sku_uses_forecast(db, sku_s):
+        return _run_v1(data, sku_s, body, db)
+    return _run_v2_as_v1_shape(data, sku_s, body, db)
 
 
 @router.post("/integration/run")
@@ -675,8 +772,10 @@ def get_replenishment(
         .all()
     )
 
+    from services.open_order_service import auto_receive_all_due_pos
     from services.operational_nfe import get_operational_snapshot
 
+    auto_receive_all_due_pos(db)
     operational = get_operational_snapshot(db, sku_s, as_of=today)
 
     return {
@@ -713,9 +812,11 @@ def post_recalc_operational(
 ):
     if not sku:
         raise HTTPException(status_code=400, detail="Missing `sku` query param.")
+    from services.open_order_service import auto_receive_all_due_pos
     from services.operational_nfe import recalc_operational_nfe
 
     try:
+        auto_receive_all_due_pos(db)
         summary = recalc_operational_nfe(db, str(sku).strip())
         db.commit()
         return {"status": "ok", "recalc": summary}

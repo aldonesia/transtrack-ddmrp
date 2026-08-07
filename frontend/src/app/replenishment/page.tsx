@@ -65,13 +65,11 @@ function BufferPositionBar({
   toy,
   tog,
   nfe,
-  unit,
 }: {
   tor: number;
   toy: number;
   tog: number;
   nfe: number;
-  unit: string;
 }) {
   const max = Math.max(tog, 1);
   const pct = (v: number) => `${Math.min(100, Math.max(0, (v / max) * 100))}%`;
@@ -92,14 +90,12 @@ function BufferPositionBar({
         <div
           className="absolute top-0 bottom-0 w-0.5 bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)]"
           style={{ left: `calc(${nfePct}% - 1px)` }}
-          title={`NFE ${nfe.toFixed(2)} ${unit}`}
+          title={`NFE ${nfe.toFixed(0)}`}
         />
       </div>
       <p className="text-center text-xs text-slate-400">
         Current NFE:{" "}
-        <span className="font-mono font-semibold text-amber-300">
-          {nfe.toFixed(2)} {unit}
-        </span>
+        <span className="font-mono font-semibold text-amber-300">{nfe.toFixed(0)}</span>
       </p>
     </div>
   );
@@ -352,7 +348,7 @@ export default function Replenishment() {
       const result = await confirmPurchaseOrder(draft.id);
       setPoModalOpen(false);
       setPoNotice(
-        `PO #${result.po.id} confirmed for ${qty.toFixed(0)} ${unit}. NFE updated to ${result.recalc.nfe.toFixed(2)} ${result.recalc.unit ?? unit} (${result.recalc.zone} zone).`,
+        `PO #${result.po.id} confirmed for ${qty.toFixed(0)}. NFE updated to ${result.recalc.nfe.toFixed(0)} (${result.recalc.zone} zone).`,
       );
       await loadPlan(plan.sku, false);
     } catch (e: unknown) {
@@ -455,7 +451,7 @@ export default function Replenishment() {
               ) : null}
             </div>
             <div className="mt-4">
-              <label className="block text-xs text-slate-500 mb-1">Order quantity ({unit})</label>
+              <label className="block text-xs text-slate-500 mb-1">Order quantity</label>
               <input
                 type="number"
                 min={1}
@@ -466,7 +462,7 @@ export default function Replenishment() {
               />
               {modalSuggestedQty > 0 ? (
                 <p className="mt-1 text-[11px] text-slate-500">
-                  Suggested: {modalSuggestedQty.toFixed(0)} {unit}
+                  Suggested: {modalSuggestedQty.toFixed(0)}
                 </p>
               ) : null}
             </div>
@@ -588,7 +584,7 @@ export default function Replenishment() {
           label="ADU"
           value={
             plan?.adu != null
-              ? `${plan.adu.toFixed(2)} ${unit}/day`
+              ? `${plan.adu.toFixed(2)}/day`
               : selectedSkuMeta?.ADU != null
                 ? `${Number(selectedSkuMeta.ADU).toFixed(2)}`
                 : "—"
@@ -599,11 +595,10 @@ export default function Replenishment() {
           label="Total demand"
           value={
             selectedSkuMeta?.Total_Demand != null
-              ? `${Number(selectedSkuMeta.Total_Demand).toLocaleString("en-US", { maximumFractionDigits: 0 })} ${unit}`
+              ? Number(selectedSkuMeta.Total_Demand).toLocaleString("en-US", { maximumFractionDigits: 0 })
               : "—"
           }
         />
-        <MetricChip label="Unit" value={unit} />
         <button
           type="button"
           disabled={!selectedSku || loading}
@@ -643,7 +638,7 @@ export default function Replenishment() {
         />
         <SummaryCard
           title="Total order today"
-          value={todayOrderQty > 0 ? `${todayOrderQty.toFixed(0)} ${unit}` : "—"}
+          value={todayOrderQty > 0 ? todayOrderQty.toFixed(0) : "—"}
           subtitle="for this SKU"
           accent="white"
         />
@@ -651,9 +646,7 @@ export default function Replenishment() {
           title="Confirmed PO"
           value={String(dash?.confirmed_po_skus ?? 0)}
           subtitle={
-            openOrderQty > 0
-              ? `${openOrderQty.toFixed(0)} ${unit} on order`
-              : "POs confirmed, not received"
+            openOrderQty > 0 ? `${openOrderQty.toFixed(0)} on order` : "POs confirmed, not received"
           }
           accent="slate"
         />
@@ -709,8 +702,8 @@ export default function Replenishment() {
               <thead>
                 <tr className="border-b border-slate-800 bg-slate-950 text-xs uppercase tracking-wide text-slate-500">
                   <th className="px-5 py-3 font-medium">Date</th>
-                  <th className="px-5 py-3 font-medium text-right">Order qty ({unit})</th>
-                  <th className="px-5 py-3 font-medium text-right">NFE ({unit})</th>
+                  <th className="px-5 py-3 font-medium text-right">Order qty</th>
+                  <th className="px-5 py-3 font-medium text-right">NFE</th>
                   <th className="px-5 py-3 font-medium text-right">Action</th>
                 </tr>
               </thead>
@@ -764,7 +757,7 @@ export default function Replenishment() {
                           <span
                             className={`inline-flex items-center gap-2 font-mono tabular-nums ${isToday ? "text-amber-200 font-semibold" : "text-slate-400"}`}
                           >
-                            {Number(r.nfe).toFixed(2)}
+                            {Number(r.nfe).toFixed(0)}
                             <span
                               className={`rounded border px-1.5 py-0.5 text-[10px] font-bold ${zoneStyle(r.zone ?? "")}`}
                             >
@@ -830,12 +823,12 @@ export default function Replenishment() {
             ) : (
               <div className="mt-5 space-y-4">
                 <div className="space-y-2 text-xs">
-                  <ZoneRangeRow color="emerald" label="Green" from={toy} to={tog} unit={unit} />
-                  <ZoneRangeRow color="amber" label="Yellow" from={tor} to={toy} unit={unit} />
-                  <ZoneRangeRow color="red" label="Red" from={0} to={tor} unit={unit} />
+                  <ZoneRangeRow color="emerald" label="Green" from={toy} to={tog} />
+                  <ZoneRangeRow color="amber" label="Yellow" from={tor} to={toy} />
+                  <ZoneRangeRow color="red" label="Red" from={0} to={tor} />
                 </div>
 
-                <BufferPositionBar tor={tor} toy={toy} tog={tog} nfe={currentNfe} unit={unit} />
+                <BufferPositionBar tor={tor} toy={toy} tog={tog} nfe={currentNfe} />
 
                 <dl className="grid grid-cols-2 gap-2 text-xs">
                   {[
@@ -847,7 +840,7 @@ export default function Replenishment() {
                     <div key={k} className="rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2">
                       <dt className="text-slate-500">{k}</dt>
                       <dd className="font-mono font-semibold text-white">
-                        {Number(v).toFixed(2)} {unit}
+                        {k === "NFE" ? Number(v).toFixed(0) : Number(v).toFixed(2)}
                       </dd>
                     </div>
                   ))}
@@ -862,7 +855,7 @@ export default function Replenishment() {
             {plan && todayOrderQty > 0 ? (
               <div className="rounded-lg border border-amber-700/50 bg-amber-950/30 px-3 py-2.5 text-xs text-amber-100 leading-relaxed">
                 NFE is at the <strong>{todayZone || "buffer"}</strong> boundary. Recommended order
-                today: <strong>{todayOrderQty.toFixed(0)} {unit}</strong>.
+                today: <strong>{todayOrderQty.toFixed(0)}</strong>.
               </div>
             ) : plan ? (
               <div className="rounded-lg border border-emerald-800/40 bg-emerald-950/20 px-3 py-2.5 text-xs text-emerald-200">
@@ -887,7 +880,7 @@ export default function Replenishment() {
               <span aria-hidden>⚡</span>
               {poSubmitting
                 ? "Processing…"
-                : `Create PO ${todayOrderQty > 0 ? `${todayOrderQty.toFixed(0)} ${unit}` : ""} now`.trim()}
+                : `Create PO ${todayOrderQty > 0 ? todayOrderQty.toFixed(0) : ""} now`.trim()}
             </button>
 
             <div className="border-t border-slate-800 pt-3">
@@ -907,9 +900,7 @@ export default function Replenishment() {
                     >
                       <span className="font-mono text-slate-300">#{po.id}</span>
                       <span className="capitalize text-slate-400">{po.status}</span>
-                      <span className="font-mono text-white">
-                        {po.qty} {po.unit}
-                      </span>
+                      <span className="font-mono text-white">{po.qty}</span>
                       <span className="text-slate-500">{fmtDateDdMmYy(po.order_date)}</span>
                     </li>
                   ))}
@@ -1081,7 +1072,7 @@ function ZoneSkuPanel({
                   >
                     <td className="px-4 py-2 font-mono text-slate-200">{row.sku}</td>
                     <td className="px-4 py-2 text-right font-mono tabular-nums text-slate-300">
-                      {row.nfe.toFixed(2)}
+                      {row.nfe.toFixed(0)}
                     </td>
                     <td className="px-4 py-2 text-right font-mono tabular-nums text-slate-300">
                       {row.order_qty > 0 ? row.order_qty.toFixed(0) : "—"}
@@ -1108,13 +1099,11 @@ function ZoneRangeRow({
   label,
   from,
   to,
-  unit,
 }: {
   color: "red" | "amber" | "emerald";
   label: string;
   from: number;
   to: number;
-  unit: string;
 }) {
   const dot =
     color === "red" ? "bg-red-500" : color === "amber" ? "bg-amber-500" : "bg-emerald-500";
@@ -1125,7 +1114,7 @@ function ZoneRangeRow({
         {label}
       </span>
       <span className="font-mono text-slate-300">
-        {from.toFixed(0)} – {to.toFixed(0)} {unit}
+        {from.toFixed(0)} – {to.toFixed(0)}
       </span>
     </div>
   );

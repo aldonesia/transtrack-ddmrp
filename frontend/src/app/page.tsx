@@ -13,10 +13,20 @@ type DashboardRow = {
   status?: string;
 };
 
+type ZoneSkuRow = {
+  sku: string;
+  nfe: number;
+  order_qty: number;
+  toy: number;
+  tog: number;
+};
+
 type DashboardSummary = {
   source?: string;
   total_sku: number;
   zona_merah: number;
+  zona_kuning?: number;
+  zona_hijau?: number;
   perlu_replenishment: number;
   open_order: number;
   confirmed_po_skus?: number;
@@ -26,6 +36,11 @@ type DashboardSummary = {
   message?: string | null;
   critical_queue_total?: number;
   top_critical?: DashboardRow[];
+  sku_by_zone?: {
+    RED: ZoneSkuRow[];
+    YELLOW: ZoneSkuRow[];
+    GREEN: ZoneSkuRow[];
+  };
 };
 
 type NightlyStatus = {
@@ -91,6 +106,109 @@ function ZoneDistributionMini({
   );
 }
 
+function zoneBadgeClass(zone: "RED" | "YELLOW" | "GREEN"): string {
+  if (zone === "RED") return "bg-red-500/20 text-red-300 border-red-500/40";
+  if (zone === "YELLOW") return "bg-amber-500/20 text-amber-200 border-amber-500/40";
+  return "bg-emerald-500/20 text-emerald-300 border-emerald-500/40";
+}
+
+function AllItemsModal({
+  skuByZone,
+  onClose,
+}: {
+  skuByZone: NonNullable<DashboardSummary["sku_by_zone"]>;
+  onClose: () => void;
+}) {
+  const rows = useMemo(() => {
+    const withZone = (zone: "RED" | "YELLOW" | "GREEN", items: ZoneSkuRow[]) =>
+      items.map((r) => ({ ...r, zone }));
+    return [
+      ...withZone("RED", skuByZone.RED ?? []),
+      ...withZone("YELLOW", skuByZone.YELLOW ?? []),
+      ...withZone("GREEN", skuByZone.GREEN ?? []),
+    ];
+  }, [skuByZone]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="all-items-title"
+      onClick={onClose}
+    >
+      <div
+        className="max-h-[85vh] w-full max-w-3xl overflow-hidden rounded-2xl border border-slate-700 bg-slate-900 shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+          <div>
+            <h2 id="all-items-title" className="text-lg font-bold text-white">
+              All items
+            </h2>
+            <p className="text-xs text-slate-500 mt-0.5">{rows.length} SKUs with an active buffer</p>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-slate-600 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
+          >
+            Close
+          </button>
+        </div>
+        <div className="max-h-[70vh] overflow-y-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="sticky top-0 bg-slate-950 text-[10px] uppercase tracking-wide text-slate-500">
+              <tr>
+                <th className="px-5 py-2.5 font-medium">SKU</th>
+                <th className="px-5 py-2.5 font-medium">Zone</th>
+                <th className="px-5 py-2.5 font-medium text-right">NFE</th>
+                <th className="px-5 py-2.5 font-medium text-right">Order qty</th>
+                <th className="px-5 py-2.5 font-medium text-right">TOY</th>
+                <th className="px-5 py-2.5 font-medium text-right">TOG</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/60">
+              {rows.length === 0 ? (
+                <tr>
+                  <td colSpan={6} className="px-5 py-10 text-center text-slate-500">
+                    No items.
+                  </td>
+                </tr>
+              ) : (
+                rows.map((row) => (
+                  <tr key={row.sku} className="hover:bg-slate-800/30">
+                    <td className="px-5 py-2.5 font-mono text-slate-200">{row.sku}</td>
+                    <td className="px-5 py-2.5">
+                      <span
+                        className={`inline-block rounded border px-2 py-0.5 text-[10px] font-bold ${zoneBadgeClass(row.zone)}`}
+                      >
+                        {row.zone}
+                      </span>
+                    </td>
+                    <td className="px-5 py-2.5 text-right font-mono tabular-nums text-slate-300">
+                      {row.nfe.toFixed(0)}
+                    </td>
+                    <td className="px-5 py-2.5 text-right font-mono tabular-nums text-slate-300">
+                      {row.order_qty > 0 ? row.order_qty.toFixed(0) : "—"}
+                    </td>
+                    <td className="px-5 py-2.5 text-right font-mono tabular-nums text-slate-500">
+                      {row.toy.toFixed(0)}
+                    </td>
+                    <td className="px-5 py-2.5 text-right font-mono tabular-nums text-slate-500">
+                      {row.tog.toFixed(0)}
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DashboardSkeleton() {
   return (
     <div className="space-y-6 animate-pulse">
@@ -114,6 +232,7 @@ export default function Dashboard() {
   const [nightly, setNightly] = useState<NightlyStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [showAllItems, setShowAllItems] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -166,10 +285,6 @@ export default function Dashboard() {
   const totalSku = data?.total_sku ?? 0;
   const skuRatio =
     totalSku > 0 ? `${processed} / ${totalSku}` : `${processed} / —`;
-
-  const redSkus = topCritical.filter((r) => r.status === "critical");
-  const sku1 = redSkus[0]?.sku;
-  const sku2 = redSkus[1]?.sku;
 
   return (
     <div className="space-y-5 animate-in fade-in zoom-in duration-500">
@@ -255,7 +370,10 @@ export default function Dashboard() {
               <p className="mt-1 text-4xl font-bold tabular-nums text-amber-400">{data.perlu_replenishment}</p>
               <p className="mt-1 text-xs text-slate-500">All SKUs — low stock</p>
             </div>
-            <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-lg">
+            <Link
+              href="/purchase-orders"
+              className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-lg text-left transition-colors hover:bg-slate-800/70 hover:border-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+            >
               <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Confirmed PO</p>
               <p className="mt-1 text-4xl font-bold tabular-nums text-emerald-400">
                 {data.confirmed_po_skus ?? data.open_order}
@@ -264,8 +382,9 @@ export default function Dashboard() {
                 {data.open_order_qty != null && data.open_order_qty > 0
                   ? `${data.open_order_qty} units on order`
                   : "Purchase orders confirmed"}
+                {" · view →"}
               </p>
-            </div>
+            </Link>
           </div>
 
           {/* Two columns */}
@@ -315,10 +434,14 @@ export default function Dashboard() {
               </div>
               {moreInQueue > 0 ? (
                 <p className="mt-3 border-t border-slate-800 pt-3 text-sm text-slate-500">
-                  +{moreInQueue} more SKUs in the replenishment queue{" "}
-                  <Link href="/replenishment" className="font-medium text-blue-400 hover:text-blue-300">
+                  +{moreInQueue} more SKUs in the queue{" "}
+                  <button
+                    type="button"
+                    onClick={() => setShowAllItems(true)}
+                    className="font-medium text-blue-400 hover:text-blue-300"
+                  >
                     View all →
-                  </Link>
+                  </button>
                 </p>
               ) : topCritical.length > 0 ? (
                 <p className="mt-3 border-t border-slate-800 pt-3 text-sm text-slate-600">
@@ -402,50 +525,13 @@ export default function Dashboard() {
                 </ul>
               </div>
 
-              <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-lg">
-                <h3 className="mb-3 text-sm font-bold text-white">Quick recommendations</h3>
-                <ul className="space-y-2.5 text-sm text-slate-300">
-                  {sku1 && sku2 ? (
-                    <li className="flex gap-2">
-                      <span className="text-blue-400">→</span>
-                      <span>
-                        Execute orders for SKUs {sku1} &amp; {sku2} today.
-                      </span>
-                    </li>
-                  ) : sku1 ? (
-                    <li className="flex gap-2">
-                      <span className="text-blue-400">→</span>
-                      <span>Execute order for SKU {sku1} today.</span>
-                    </li>
-                  ) : (
-                    <li className="flex gap-2 text-slate-500">
-                      <span>→</span>
-                      <span>Run Analytics to activate buffers and get recommendations.</span>
-                    </li>
-                  )}
-                  <li className="flex gap-2">
-                    <span className="text-blue-400">→</span>
-                    <span>Contact suppliers to expedite top-priority SKUs.</span>
-                  </li>
-                  <li className="flex gap-2">
-                    <span className="text-blue-400">→</span>
-                    <span>
-                      Check {moreInQueue > 0 ? `${moreInQueue} more SKUs` : "other SKUs"} in{" "}
-                      <Link href="/replenishment" className="text-blue-400 hover:underline">
-                        Replenishment
-                      </Link>
-                      .
-                    </span>
-                  </li>
-                  <li className="flex gap-2">
-                    <span className="text-blue-400">→</span>
-                    <span>Review buffer parameters if deficits recur.</span>
-                  </li>
-                </ul>
-              </div>
             </div>
           </div>
         </>
+      ) : null}
+
+      {showAllItems && data?.sku_by_zone ? (
+        <AllItemsModal skuByZone={data.sku_by_zone} onClose={() => setShowAllItems(false)} />
       ) : null}
     </div>
   );

@@ -133,6 +133,7 @@ class SKUMasterIn(BaseModel):
     initial_inventory: Optional[float] = Field(default=None, ge=0)
     qmax: Optional[int] = Field(default=None, ge=1)
     target_percentile: Optional[float] = Field(default=0.95, ge=0, le=1)
+    use_forecast: Optional[bool] = Field(default=True)
 
 
 def _effective_moq(m: Optional[int]) -> int:
@@ -322,6 +323,7 @@ def list_master_skus(db: Session = Depends(get_db)):
                 "initial_inventory": getattr(r, "initial_inventory", None),
                 "qmax": getattr(r, "qmax", None),
                 "target_percentile": getattr(r, "target_percentile", None),
+                "use_forecast": getattr(r, "use_forecast", True) if getattr(r, "use_forecast", True) is not None else True,
             }
             for r in rows
         ]
@@ -370,6 +372,7 @@ def create_or_update_sku(body: SKUMasterIn, db: Session = Depends(get_db)):
         initial_inventory=body.initial_inventory,
         qmax=body.qmax,
         target_percentile=body.target_percentile if body.target_percentile is not None else 0.95,
+        use_forecast=body.use_forecast if body.use_forecast is not None else True,
     )
     db.add(row)
     db.commit()
@@ -552,6 +555,76 @@ def list_demand(
         ],
         "total": total,
     }
+
+
+class DemandRowIn(BaseModel):
+    sku: str = Field(..., min_length=1)
+    date: str = Field(..., description="ISO date (YYYY-MM-DD)")
+    demand: float = Field(..., ge=0)
+    promo_discount: float = Field(0, ge=0)
+
+
+def _demand_row_out(dr: DailyRecord, nama_item: Optional[str], group: Optional[str]) -> dict[str, Any]:
+    return {
+        "id": int(dr.id),
+        "date": dr.date.isoformat() if dr.date is not None else None,
+        "sku": dr.sku,
+        "nama_item": nama_item,
+        "group": group,
+        "demand": float(dr.demand or 0),
+        "promo_discount": float(dr.promo_discount or 0),
+    }
+
+
+@router.post("/demand")
+def create_demand_row(body: DemandRowIn, db: Session = Depends(get_db)):
+    sku = body.sku.strip()
+    master = db.query(SKUMaster).filter(SKUMaster.sku == sku).first()
+    if not master:
+        raise HTTPException(400, f"SKU {sku} belum ada di master. Tambahkan di tab Master SKU terlebih dahulu.")
+    d = _parse_opt_date(body.date)
+    if d is None:
+        raise HTTPException(400, f"Invalid date: {body.date}")
+    exists = (
+        db.query(DailyRecord)
+        .filter(DailyRecord.sku == sku, DailyRecord.date == d)
+        .first()
+    )
+    if exists:
+        raise HTTPException(409, f"Demand for SKU {sku} on {body.date} already exists (id={exists.id}). Edit it instead.")
+    row = DailyRecord(date=d, sku=sku, demand=float(body.demand), promo_discount=float(body.promo_discount))
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _demand_row_out(row, master.nama_item, master.group)
+
+
+@router.put("/demand/{row_id}")
+def update_demand_row(row_id: int, body: DemandRowIn, db: Session = Depends(get_db)):
+    row = db.query(DailyRecord).filter(DailyRecord.id == row_id).first()
+    if not row:
+        raise HTTPException(404, f"Demand record {row_id} not found.")
+    sku = body.sku.strip()
+    master = db.query(SKUMaster).filter(SKUMaster.sku == sku).first()
+    if not master:
+        raise HTTPException(400, f"SKU {sku} belum ada di master. Tambahkan di tab Master SKU terlebih dahulu.")
+    d = _parse_opt_date(body.date)
+    if d is None:
+        raise HTTPException(400, f"Invalid date: {body.date}")
+    conflict = (
+        db.query(DailyRecord)
+        .filter(DailyRecord.sku == sku, DailyRecord.date == d, DailyRecord.id != row_id)
+        .first()
+    )
+    if conflict:
+        raise HTTPException(409, f"Demand for SKU {sku} on {body.date} already exists (id={conflict.id}).")
+    row.sku = sku
+    row.date = d
+    row.demand = float(body.demand)
+    row.promo_discount = float(body.promo_discount)
+    db.commit()
+    db.refresh(row)
+    return _demand_row_out(row, master.nama_item, master.group)
 
 
 @router.get("/export/demand")

@@ -73,6 +73,7 @@ export type MasterSku = {
   initial_inventory?: number | null;
   qmax?: number | null;
   target_percentile?: number | null;
+  use_forecast?: boolean | null;
 };
 
 export async function getDatasetStatus(): Promise<DatasetStatus> {
@@ -259,6 +260,39 @@ export async function listDemandRows(
   if (opts.group) params.set("group", opts.group);
   if (opts.promoOnly) params.set("promo_only", "true");
   const r = await fetch(`${getApiBase()}/api/master/demand?${params.toString()}`);
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json();
+}
+
+export type DemandRowIn = {
+  sku: string;
+  date: string;
+  demand: number;
+  promo_discount?: number;
+};
+
+export async function createDemandRow(body: DemandRowIn): Promise<DemandRow> {
+  const r = await fetch(`${getApiBase()}/api/master/demand`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json();
+}
+
+export async function updateDemandRow(id: number, body: DemandRowIn): Promise<DemandRow> {
+  const r = await fetch(`${getApiBase()}/api/master/demand/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
   if (!r.ok) {
     const j = await r.json().catch(() => ({}));
     throw new Error((j as { detail?: string }).detail ?? r.statusText);
@@ -612,6 +646,37 @@ export async function listPurchaseOrders(
   if (sku) params.set("sku", sku);
   if (status) params.set("status", status);
   const r = await fetch(`${getApiBase()}/api/purchase-orders?${params.toString()}`);
+  if (!r.ok) {
+    const j = await r.json().catch(() => ({}));
+    throw new Error((j as { detail?: string }).detail ?? r.statusText);
+  }
+  return r.json();
+}
+
+export type AutoReceiveStatus = {
+  enabled: boolean;
+  interval_minutes: number;
+  running: boolean;
+  last_run_at: string | null;
+  last_checked: number;
+  last_received: number;
+};
+
+export async function getAutoReceiveStatus(): Promise<AutoReceiveStatus> {
+  const r = await fetch(`${getApiBase()}/api/purchase-orders/auto-receive-status`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function triggerAutoReceiveDue(): Promise<{
+  checked: number;
+  received: number;
+  pos: PurchaseOrder[];
+  failed: Array<{ po_id: number; error: string }>;
+}> {
+  const r = await fetch(`${getApiBase()}/api/purchase-orders/auto-receive-due`, {
+    method: "POST",
+  });
   if (!r.ok) {
     const j = await r.json().catch(() => ({}));
     throw new Error((j as { detail?: string }).detail ?? r.statusText);

@@ -123,6 +123,52 @@ class TestPurchaseOrderService(unittest.TestCase):
         self.assertEqual(summary["sku"], "1000001")
         self.assertIn(summary["zone"], ("RED", "YELLOW", "GREEN"))
 
+    def test_auto_receive_due_po_becomes_stock(self):
+        # order_date = buffer start minus lead time (7d) -> expected_receipt_date lands
+        # exactly on the buffer's start_date (the app's "today" reference) -> due.
+        past_order_date = self.buf.start_date - timedelta(days=7)
+        po = po_svc.create_draft_po(self.db, "1000001", 100.0, order_date=past_order_date)
+        po_svc.confirm_po(self.db, po.id)
+        self.assertEqual(po.expected_receipt_date, self.buf.start_date)
+
+        before = (
+            self.db.query(SkuOperationalState)
+            .filter(SkuOperationalState.sku == "1000001")
+            .first()
+        )
+        oh_before = float(before.on_hand)
+
+        result = po_svc.auto_receive_all_due_pos(self.db)
+        self.assertEqual(result["checked"], 1)
+        self.assertEqual(result["received"], 1)
+        self.assertEqual(result["pos"][0]["status"], "received")
+
+        listed = po_svc.list_pos(self.db, sku="1000001")
+        self.assertEqual(listed["rows"][0]["status"], "received")
+
+        after = (
+            self.db.query(SkuOperationalState)
+            .filter(SkuOperationalState.sku == "1000001")
+            .first()
+        )
+        self.assertAlmostEqual(float(after.on_hand), oh_before + 100.0)
+
+    def test_auto_receive_skips_not_yet_due_po(self):
+        # order_date one day after buffer start -> expected_receipt_date is past the
+        # buffer's reference "today", so it must stay confirmed (counted as open order).
+        future_order_date = self.buf.start_date + timedelta(days=1)
+        po = po_svc.create_draft_po(
+            self.db, "1000001", 50.0, order_date=future_order_date
+        )
+        po_svc.confirm_po(self.db, po.id)
+        self.assertGreater(po.expected_receipt_date, self.buf.start_date)
+
+        result = po_svc.auto_receive_all_due_pos(self.db)
+        self.assertEqual(result["checked"], 0)
+
+        listed = po_svc.list_pos(self.db, sku="1000001")
+        self.assertEqual(listed["rows"][0]["status"], "confirmed")
+
 
 if __name__ == "__main__":
     unittest.main()

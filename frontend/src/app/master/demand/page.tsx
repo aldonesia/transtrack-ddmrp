@@ -2,14 +2,18 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  createDemandRow,
   demandTemplateUrl,
   exportDemandUrl,
   getDemandSummary,
   listDemandRows,
+  listMasterSkus,
+  updateDemandRow,
   uploadDemandExcel,
   validateDemandExcel,
   type DemandRow,
   type DemandSummary,
+  type MasterSku,
 } from "@/lib/api";
 
 const PAGE_SIZE = 10;
@@ -140,10 +144,93 @@ export default function MasterDemandPage() {
   const [err, setErr] = useState<string | null>(null);
   const [lastExportAt, setLastExportAt] = useState<string | null>(null);
 
+  const [masterSkus, setMasterSkus] = useState<MasterSku[]>([]);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingRow, setEditingRow] = useState<DemandRow | null>(null);
+  const [modalSku, setModalSku] = useState("");
+  const [modalDate, setModalDate] = useState("");
+  const [modalDemand, setModalDemand] = useState("");
+  const [modalPromo, setModalPromo] = useState("");
+  const [modalErr, setModalErr] = useState<string | null>(null);
+  const [modalBusy, setModalBusy] = useState(false);
+
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 300);
     return () => clearTimeout(t);
   }, [search]);
+
+  useEffect(() => {
+    listMasterSkus()
+      .then((d) => setMasterSkus(d.skus ?? []))
+      .catch(() => setMasterSkus([]));
+  }, []);
+
+  const openNewDemandModal = () => {
+    setEditingRow(null);
+    setModalSku("");
+    setModalDate(new Date().toISOString().slice(0, 10));
+    setModalDemand("");
+    setModalPromo("");
+    setModalErr(null);
+    setModalOpen(true);
+  };
+
+  const openEditDemandModal = (row: DemandRow) => {
+    setEditingRow(row);
+    setModalSku(row.sku);
+    setModalDate(row.date ? row.date.slice(0, 10) : "");
+    setModalDemand(String(row.demand ?? ""));
+    // Stored as a fraction (0–1); this field takes a 0–100 percent input.
+    setModalPromo(row.promo_discount ? String(row.promo_discount * 100) : "");
+    setModalErr(null);
+    setModalOpen(true);
+  };
+
+  const submitDemandModal = async () => {
+    setModalErr(null);
+    const sku = modalSku.trim();
+    if (!sku) {
+      setModalErr("SKU is required.");
+      return;
+    }
+    if (!modalDate) {
+      setModalErr("Date is required.");
+      return;
+    }
+    const demandN = Number(modalDemand);
+    if (!Number.isFinite(demandN) || demandN < 0) {
+      setModalErr("Demand must be a number ≥ 0.");
+      return;
+    }
+    const promoN = modalPromo.trim() === "" ? 0 : Number(modalPromo) / 100;
+    setModalBusy(true);
+    try {
+      if (editingRow) {
+        await updateDemandRow(editingRow.id, {
+          sku,
+          date: modalDate,
+          demand: demandN,
+          promo_discount: promoN,
+        });
+        setMsg(`Demand record #${editingRow.id} updated.`);
+      } else {
+        const created = await createDemandRow({
+          sku,
+          date: modalDate,
+          demand: demandN,
+          promo_discount: promoN,
+        });
+        setMsg(`Demand record #${created.id} added for SKU ${sku}.`);
+      }
+      setModalOpen(false);
+      await loadSummary();
+      await loadTable();
+    } catch (e: unknown) {
+      setModalErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setModalBusy(false);
+    }
+  };
 
   const loadSummary = useCallback(async () => {
     try {
@@ -301,6 +388,13 @@ export default function MasterDemandPage() {
           >
             <span aria-hidden>⬇</span> Export Demand
           </a>
+          <button
+            type="button"
+            onClick={openNewDemandModal}
+            className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500"
+          >
+            <span aria-hidden>+</span> New demand
+          </button>
         </div>
       </div>
 
@@ -628,7 +722,20 @@ export default function MasterDemandPage() {
                   const pct = Math.min(100, (Number(r.demand) / maxDemandOnPage) * 100);
                   const promo = Number(r.promo_discount ?? 0);
                   return (
-                    <tr key={r.id} className="hover:bg-slate-800/40">
+                    <tr
+                      key={r.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openEditDemandModal(r)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          openEditDemandModal(r);
+                        }
+                      }}
+                      className="cursor-pointer hover:bg-slate-800/40"
+                      title="Click to edit"
+                    >
                       <td className="px-4 py-3 align-top">
                         <div className="text-white font-medium">{formatDateShort(r.date)}</div>
                         <div className="text-[11px] text-slate-600">{daysAgoLabel(r.date)}</div>
@@ -707,6 +814,116 @@ export default function MasterDemandPage() {
           </div>
         </div>
       </div>
+
+      {modalOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="demand-modal-title"
+          onClick={() => setModalOpen(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="demand-modal-title" className="text-lg font-bold text-white">
+              {editingRow ? `Edit demand #${editingRow.id}` : "New demand"}
+            </h2>
+
+            {modalErr ? (
+              <div className="mt-3 rounded-lg border border-red-900/50 bg-red-950/30 px-3 py-2 text-xs text-red-200">
+                {modalErr}
+              </div>
+            ) : null}
+
+            <div className="mt-4">
+              <label htmlFor="demand-sku" className="block text-xs text-slate-500 mb-1">
+                SKU
+              </label>
+              <input
+                id="demand-sku"
+                list="demand-sku-options"
+                value={modalSku}
+                onChange={(e) => setModalSku(e.target.value)}
+                placeholder="SKU code"
+                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
+              />
+              <datalist id="demand-sku-options">
+                {masterSkus.map((s) => (
+                  <option key={s.sku} value={s.sku}>
+                    {s.nama_item ?? ""}
+                  </option>
+                ))}
+              </datalist>
+            </div>
+
+            <div className="mt-4">
+              <label htmlFor="demand-date" className="block text-xs text-slate-500 mb-1">
+                Date
+              </label>
+              <input
+                id="demand-date"
+                type="date"
+                value={modalDate}
+                onChange={(e) => setModalDate(e.target.value)}
+                className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white"
+              />
+            </div>
+
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <div>
+                <label htmlFor="demand-qty" className="block text-xs text-slate-500 mb-1">
+                  Demand
+                </label>
+                <input
+                  id="demand-qty"
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={modalDemand}
+                  onChange={(e) => setModalDemand(e.target.value)}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-white"
+                />
+              </div>
+              <div>
+                <label htmlFor="demand-promo" className="block text-xs text-slate-500 mb-1">
+                  Promo discount (%)
+                </label>
+                <input
+                  id="demand-promo"
+                  type="number"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={modalPromo}
+                  onChange={(e) => setModalPromo(e.target.value)}
+                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-white"
+                />
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={modalBusy}
+                onClick={() => setModalOpen(false)}
+                className="rounded-lg border border-slate-600 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={modalBusy}
+                onClick={() => void submitDemandModal()}
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50"
+              >
+                {modalBusy ? "Saving…" : editingRow ? "Save changes" : "Add demand"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

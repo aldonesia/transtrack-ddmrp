@@ -14,10 +14,16 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 from fastapi import Depends
 from services.ddmrp_logic import optimize_buffer
+from services.open_order_service import auto_receive_all_due_pos
 from api.analytics import router as analytics_router
 from api.analytics import post_run, RunBody
 from api.master import router as master_router
-from api.purchase_order import router as purchase_order_router
+from api.purchase_order import (
+    router as purchase_order_router,
+    AUTO_RECEIVE_ENABLED,
+    AUTO_RECEIVE_INTERVAL_MINUTES,
+    auto_receive_state as _auto_receive_state,
+)
 from schema_migrate import migrate_open_order_tables, migrate_sku_master_columns
 import math
 
@@ -197,11 +203,39 @@ def _nightly_scheduler_loop():
             _nightly_state["running"] = False
 
 
+def _auto_receive_scheduler_loop():
+    while True:
+        time.sleep(max(AUTO_RECEIVE_INTERVAL_MINUTES, 1) * 60)
+        if not AUTO_RECEIVE_ENABLED:
+            continue
+        _auto_receive_state["running"] = True
+        db = SessionLocal()
+        try:
+            result = auto_receive_all_due_pos(db)
+            db.commit()
+            _auto_receive_state["last_checked"] = result["checked"]
+            _auto_receive_state["last_received"] = result["received"]
+        except Exception:
+            db.rollback()
+        finally:
+            db.close()
+            _auto_receive_state["last_run_at"] = datetime.now().isoformat()
+            _auto_receive_state["running"] = False
+
+
 @app.on_event("startup")
 def startup_nightly_scheduler():
     if not NIGHTLY_REFRESH_ENABLED:
         return
     t = threading.Thread(target=_nightly_scheduler_loop, daemon=True)
+    t.start()
+
+
+@app.on_event("startup")
+def startup_auto_receive_scheduler():
+    if not AUTO_RECEIVE_ENABLED:
+        return
+    t = threading.Thread(target=_auto_receive_scheduler_loop, daemon=True)
     t.start()
 
 @app.get("/")
@@ -253,6 +287,7 @@ def nightly_run_now():
 
 @app.get("/api/dashboard-summary")
 def get_dashboard_summary(db: Session = Depends(get_db)):
+    auto_receive_all_due_pos(db)
     active_buffers = (
         db.query(DDMRPBuffer)
         .filter(DDMRPBuffer.status == "Active")

@@ -3,6 +3,7 @@ Purchase order API — operational loop (P1).
 """
 from __future__ import annotations
 
+import os
 from datetime import date
 from typing import Optional
 
@@ -14,6 +15,19 @@ from database import get_db
 from services import open_order_service as po_svc
 
 router = APIRouter(prefix="/api/purchase-orders", tags=["purchase-orders"])
+
+# Background auto-receive loop config (thread lives in main.py, state read/written from there
+# and exposed here so the frontend PO module can poll it).
+AUTO_RECEIVE_ENABLED = os.getenv("AUTO_RECEIVE_ENABLED", "1") == "1"
+AUTO_RECEIVE_INTERVAL_MINUTES = int(os.getenv("AUTO_RECEIVE_INTERVAL_MINUTES", "30"))
+
+auto_receive_state = {
+    "enabled": AUTO_RECEIVE_ENABLED,
+    "running": False,
+    "last_run_at": None,
+    "last_checked": 0,
+    "last_received": 0,
+}
 
 
 class CreatePOBody(BaseModel):
@@ -99,6 +113,7 @@ def list_purchase_orders(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
+    po_svc.auto_receive_all_due_pos(db)
     return po_svc.list_pos(
         db,
         sku=sku,
@@ -109,9 +124,26 @@ def list_purchase_orders(
     )
 
 
+@router.get("/auto-receive-status")
+def get_auto_receive_status():
+    """Registered before `/{po_id}` — a literal path segment must precede a path param
+    route or FastAPI tries to parse "auto-receive-status" as an int po_id and 422s."""
+    return {
+        "interval_minutes": AUTO_RECEIVE_INTERVAL_MINUTES,
+        **auto_receive_state,
+    }
+
+
+@router.post("/auto-receive-due")
+def trigger_auto_receive_due(db: Session = Depends(get_db)):
+    """Manual trigger for ops/testing — the background loop in main.py runs this periodically."""
+    return po_svc.auto_receive_all_due_pos(db)
+
+
 @router.get("/{po_id}")
 def get_purchase_order(po_id: int, db: Session = Depends(get_db)):
     try:
+        po_svc.auto_receive_all_due_pos(db)
         return po_svc.get_po(db, po_id)
     except ValueError as e:
         raise _http_from_value_error(e) from e

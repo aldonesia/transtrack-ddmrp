@@ -15,9 +15,9 @@ def migrate_sku_master_columns(engine: Engine) -> None:
     existing = {c["name"] for c in insp.get_columns("sku_master")}
     dialect = engine.dialect.name
     if dialect == "sqlite":
-        str_t, float_t, int_t = "TEXT", "REAL", "INTEGER"
+        str_t, float_t, int_t, bool_t = "TEXT", "REAL", "INTEGER", "INTEGER"
     else:
-        str_t, float_t, int_t = "VARCHAR(128)", "DOUBLE PRECISION", "INTEGER"
+        str_t, float_t, int_t, bool_t = "VARCHAR(128)", "DOUBLE PRECISION", "INTEGER", "BOOLEAN"
     adds: list[tuple[str, str]] = [
         ("group", str_t),
         ("criticality", str_t),
@@ -35,6 +35,7 @@ def migrate_sku_master_columns(engine: Engine) -> None:
         ("initial_inventory", float_t),
         ("qmax", int_t),
         ("target_percentile", float_t),
+        ("use_forecast", bool_t),
     ]
     for col, sql_type in adds:
         if col in existing:

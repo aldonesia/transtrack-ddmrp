@@ -23,7 +23,22 @@ export const MASTER_SKU_EXCEL_COLUMNS = [
   "Target Percentile",
 ] as const;
 
-export const MASTER_SKU_EXCEL_COLUMNS_SEMICOLON = MASTER_SKU_EXCEL_COLUMNS.join(";");
+/**
+ * Columns that must have a value on every row (per README "Kolom wajib").
+ * All 21 `MASTER_SKU_EXCEL_COLUMNS` headers must still be present in the file —
+ * this subset is about per-row value validation, not header presence.
+ */
+export const MASTER_SKU_REQUIRED_COLUMNS = [
+  "Material Number",
+  "Material Group",
+  "Lead Time_Days",
+  "Sales Price",
+  "Purchase Price",
+  "Holding Cost Rate/day",
+  "Lost Sale Rate/Each",
+  "Logistic Cost/Order",
+  "MOQ",
+] as const;
 
 /** Allowed Unit values (must match backend `MASTER_SKU_ALLOWED_UNITS`). */
 export const MASTER_SKU_ALLOWED_UNITS = [
@@ -41,6 +56,9 @@ export const MASTER_SKU_ALLOWED_UNITS = [
   "IN",
   "L",
 ] as const;
+
+/** Vendor Type choices for the manual Add/Edit SKU modal. */
+export const MASTER_SKU_VENDOR_TYPES = ["Local", "Import"] as const;
 
 export type MasterSkuFormKey =
   | "sku"
@@ -68,22 +86,27 @@ export type MasterSkuFormKey =
 export type MasterSkuFieldDef = {
   key: MasterSkuFormKey;
   label: string;
-  kind: "text" | "int" | "money" | "rate" | "unit" | "percent";
+  kind: "text" | "int" | "money" | "rate" | "unit" | "percent" | "select";
   required?: boolean;
   step?: number;
   hint?: string;
+  options?: readonly string[];
 };
 
-/** Form field order aligned with Excel columns. */
+/**
+ * Fields rendered in the manual Add/Edit SKU modal.
+ * Criticality / ABC Class / XYZ Class and Qmax are intentionally omitted here —
+ * they're still stored (round-tripped from the loaded row on save) and still part
+ * of the Excel bulk-upload template (`MASTER_SKU_EXCEL_COLUMNS`), just not manually
+ * editable from this form. Holding Cost/day (IDR) and Penalty/unit (IDR) are also
+ * omitted — they're auto-computed (rate × price) and shown read-only instead.
+ */
 export const MASTER_SKU_FORM_FIELDS: MasterSkuFieldDef[] = [
   { key: "sku", label: "Material Number", kind: "text", required: true },
   { key: "nama_item", label: "Material Description", kind: "text", required: true },
   { key: "group", label: "Material Group", kind: "text", required: true },
   { key: "unit", label: "Unit", kind: "unit", required: true },
-  { key: "criticality", label: "Criticality", kind: "text" },
-  { key: "abc_class", label: "ABC Class", kind: "text" },
-  { key: "xyz_class", label: "XYZ Class", kind: "text" },
-  { key: "vendor_type", label: "Vendor Type", kind: "text" },
+  { key: "vendor_type", label: "Vendor Type", kind: "select", options: MASTER_SKU_VENDOR_TYPES },
   { key: "currency", label: "Currency", kind: "text" },
   {
     key: "lead_time",
@@ -102,10 +125,8 @@ export const MASTER_SKU_FORM_FIELDS: MasterSkuFieldDef[] = [
     required: true,
     step: 0.000001,
   },
-  { key: "holding_cost_day_idr", label: "Holding Cost/day (IDR)", kind: "money" },
   { key: "lost_sale_rate_each", label: "Lost Sale Rate/Each", kind: "rate", required: true, step: 0.01 },
-  { key: "penalty_per_unit_idr", label: "Penalty/unit (IDR)", kind: "money" },
-  { key: "logistic_cost_order", label: "Logistic Cost/Order", kind: "money", required: true },
+  { key: "logistic_cost_order", label: "Order Cost", kind: "money", required: true },
   {
     key: "initial_inventory",
     label: "Initial Inventory",
@@ -114,14 +135,8 @@ export const MASTER_SKU_FORM_FIELDS: MasterSkuFieldDef[] = [
     hint: "On-hand quantity at simulation start (required for buffer v2).",
   },
   {
-    key: "qmax",
-    label: "Qmax",
-    kind: "int",
-    hint: "Maximum order quantity cap; leave empty if unlimited.",
-  },
-  {
     key: "target_percentile",
-    label: "Target Percentile",
+    label: "Target Service Level",
     kind: "percent",
     required: true,
     step: 0.01,

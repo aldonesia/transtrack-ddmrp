@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, Date, DateTime, Text, ForeignKey, UniqueConstraint, Index
+from sqlalchemy import Column, Integer, String, Float, Boolean, Date, DateTime, Text, ForeignKey, UniqueConstraint, Index
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -60,6 +60,7 @@ class SKUMaster(Base):
     initial_inventory = Column(Float, nullable=True)
     qmax = Column(Integer, nullable=True)
     target_percentile = Column(Float, nullable=True)
+    use_forecast = Column(Boolean, nullable=True, default=True)
 
 class DDMRPBuffer(Base):
     __tablename__ = "ddmrp_buffer"

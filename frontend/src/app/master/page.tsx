@@ -14,8 +14,8 @@ import {
 import {
   MASTER_SKU_ALLOWED_UNITS,
   MASTER_SKU_EXCEL_COLUMNS,
-  MASTER_SKU_EXCEL_COLUMNS_SEMICOLON,
   MASTER_SKU_FORM_FIELDS,
+  MASTER_SKU_REQUIRED_COLUMNS,
 } from "@/lib/masterSkuFields";
 
 const PAGE_SIZE = 9;
@@ -119,6 +119,7 @@ type SkuForm = {
   target_percentile: number;
   target_sl: number;
   status: "Active" | "Nonaktif";
+  use_forecast: boolean;
 };
 
 const emptyForm: SkuForm = {
@@ -145,6 +146,7 @@ const emptyForm: SkuForm = {
   target_percentile: 0.95,
   target_sl: 0.95,
   status: "Active",
+  use_forecast: true,
 };
 
 function rowToForm(r: MasterSku): SkuForm {
@@ -176,6 +178,7 @@ function rowToForm(r: MasterSku): SkuForm {
     target_percentile: Number(r.target_percentile ?? 0.95),
     target_sl: Number(r.target_sl ?? 0.95),
     status: st === "Nonaktif" ? "Nonaktif" : "Active",
+    use_forecast: r.use_forecast !== false,
   };
 }
 
@@ -184,6 +187,7 @@ export default function MasterData() {
   const [rows, setRows] = useState<MasterSku[]>([]);
   const [form, setForm] = useState<SkuForm>(emptyForm);
   const [selectedSku, setSelectedSku] = useState<string | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -277,12 +281,14 @@ export default function MasterData() {
     setSelectedSku(item.sku);
     setForm(rowToForm(item));
     setErr(null);
+    setModalOpen(true);
   };
 
   const startNew = () => {
     setSelectedSku(null);
     setForm({ ...emptyForm });
     setErr(null);
+    setModalOpen(true);
   };
 
   const resetForm = () => {
@@ -317,6 +323,10 @@ export default function MasterData() {
       setErr(`Unit must be one of: ${MASTER_SKU_ALLOWED_UNITS.join(", ")}`);
       return;
     }
+    const holdingCostDayIdr = Math.round(
+      Number(form.holding_cost_rate_day) * Number(form.purchase_price)
+    );
+    const penaltyPerUnitIdr = Math.round(Number(form.lost_sale_rate_each) * Number(form.harga));
     try {
       await saveMasterSku({
         sku,
@@ -333,18 +343,20 @@ export default function MasterData() {
         harga: Math.round(Number(form.harga)),
         purchase_price: Math.round(Number(form.purchase_price)),
         holding_cost_rate_day: Number(form.holding_cost_rate_day),
-        holding_cost_day_idr: Math.round(Number(form.holding_cost_day_idr)),
+        holding_cost_day_idr: holdingCostDayIdr,
         lost_sale_rate_each: Number(form.lost_sale_rate_each),
-        penalty_per_unit_idr: Math.round(Number(form.penalty_per_unit_idr)),
+        penalty_per_unit_idr: penaltyPerUnitIdr,
         logistic_cost_order: Math.round(Number(form.logistic_cost_order)),
         initial_inventory: Math.max(0, Math.round(Number(form.initial_inventory))),
         qmax: form.qmax === "" ? null : Math.max(1, Math.round(Number(form.qmax))),
         target_percentile: Number(form.target_percentile),
         target_sl: Number(form.target_sl),
         status: form.status,
+        use_forecast: form.use_forecast,
       });
       setMsg(`Changes for SKU ${sku} saved.`);
       setSelectedSku(sku);
+      setModalOpen(false);
       reload();
       loadGroups();
     } catch (e: unknown) {
@@ -366,6 +378,12 @@ export default function MasterData() {
     } finally {
       setUploadMasterBusy(false);
     }
+  };
+
+  const onDropMasterSku = (e: React.DragEvent) => {
+    e.preventDefault();
+    const f = e.dataTransfer.files?.[0];
+    if (f) void onValidateMasterSku(f);
   };
 
   const onCommitMasterSku = async () => {
@@ -507,29 +525,28 @@ export default function MasterData() {
           </div>
         );
       }
-      if (field.key === "qmax") {
+      if (field.kind === "select") {
+        const current = String(form[field.key] ?? "");
+        const options = field.options ?? [];
         return (
           <div key={field.key}>
             <label htmlFor={id} className="block text-xs font-medium text-slate-400 mb-1">
               {field.label}
+              {field.required && <span className="text-red-400"> *</span>}
             </label>
-            <input
+            <select
               id={id}
-              type="number"
-              min={1}
-              step={1}
-              placeholder="Unlimited"
               className="w-full bg-slate-950 border border-slate-700 text-sm rounded-lg px-3 py-2 text-white"
-              value={form.qmax === "" ? "" : form.qmax}
-              onChange={(e) => {
-                const v = e.target.value;
-                setForm((f) => ({
-                  ...f,
-                  qmax: v === "" ? "" : Math.max(1, Math.round(Number(v))),
-                }));
-              }}
-            />
-            {field.hint && <p className="text-[11px] text-slate-600 mt-1">{field.hint}</p>}
+              value={options.includes(current) ? current : ""}
+              onChange={(e) => setForm((f) => ({ ...f, [field.key]: e.target.value } as SkuForm))}
+            >
+              <option value="">Select…</option>
+              {options.map((o) => (
+                <option key={o} value={o}>
+                  {o}
+                </option>
+              ))}
+            </select>
           </div>
         );
       }
@@ -543,7 +560,7 @@ export default function MasterData() {
         );
       }
       const setNum = (n: number) => setForm((f) => ({ ...f, [field.key]: n } as SkuForm));
-      return numInput(
+      const baseInput = numInput(
         id,
         field.label,
         Number(form[field.key] ?? 0),
@@ -560,6 +577,35 @@ export default function MasterData() {
           max: field.kind === "percent" ? 1 : undefined,
           hint: field.hint,
         }
+      );
+
+      let computedLabel: string | null = null;
+      let computedValue = 0;
+      let computedFormula: string | null = null;
+      if (field.key === "holding_cost_rate_day") {
+        computedLabel = "Holding Cost/day (IDR)";
+        computedValue = Math.round(
+          Number(form.holding_cost_rate_day || 0) * Number(form.purchase_price || 0)
+        );
+        computedFormula = "Holding Cost Rate/day × Purchase Price";
+      } else if (field.key === "lost_sale_rate_each") {
+        computedLabel = "Penalty/unit (IDR)";
+        computedValue = Math.round(Number(form.lost_sale_rate_each || 0) * Number(form.harga || 0));
+        computedFormula = "Lost Sale Rate/Each × Sales Price";
+      }
+      if (!computedLabel) return baseInput;
+
+      return (
+        <div key={field.key} className="contents">
+          {baseInput}
+          <div className="rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2 mt-1.5">
+            <p className="text-xs font-medium text-slate-500">{computedLabel}</p>
+            <p className="text-sm font-mono text-slate-300 mt-0.5">
+              {computedValue.toLocaleString("en-US")}
+            </p>
+            <p className="text-[11px] text-slate-600 mt-0.5">Auto-calculated: {computedFormula}</p>
+          </div>
+        </div>
       );
     });
 
@@ -590,6 +636,13 @@ export default function MasterData() {
           >
             <span aria-hidden>⬇</span> Export Excel
           </a>
+          <button
+            type="button"
+            onClick={startNew}
+            className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500"
+          >
+            <span aria-hidden>+</span> New SKU
+          </button>
         </div>
       </div>
 
@@ -695,8 +748,7 @@ export default function MasterData() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-            <div className="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-2xl shadow-xl overflow-hidden flex flex-col min-h-[320px]">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl overflow-hidden flex flex-col min-h-[320px]">
               <div className="px-4 py-3 border-b border-slate-800 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                 <div>
                   <h2 className="text-base font-bold text-white">SKU List</h2>
@@ -792,38 +844,48 @@ export default function MasterData() {
                   </button>
                 </div>
               </div>
+          </div>
+        </>
+      )}
+
+      {modalOpen ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="sku-modal-title"
+          onClick={() => setModalOpen(false)}
+        >
+          <div
+            className="w-full max-w-2xl max-h-[85vh] bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 py-4 border-b border-slate-800 shrink-0">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <h2 id="sku-modal-title" className="text-lg font-bold text-white">
+                    {selectedSku ? `Edit SKU: ${selectedSku}` : "New SKU"}
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Fields follow the Excel template <span className="font-mono">sku_master</span>.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setModalOpen(false)}
+                  className="text-slate-500 hover:text-white shrink-0"
+                  aria-label="Close"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
 
-            <div className="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-2xl shadow-xl flex flex-col max-h-[calc(100vh-10rem)]">
-              <div className="px-5 py-4 border-b border-slate-800 shrink-0">
-                <div className="flex items-start justify-between gap-2">
+            <form onSubmit={submitSku} className="flex flex-col flex-1 min-h-0">
+              <div className="overflow-y-auto px-5 py-4 space-y-3 flex-1 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3 sm:space-y-0">
+                {renderMasterSkuFields()}
+                <div className="sm:col-span-2 pt-2 border-t border-slate-800 grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-3">
                   <div>
-                    <h2 className="text-lg font-bold text-white">Detail SKU</h2>
-                    {selectedSku ? (
-                      <span className="mt-1 inline-block text-xs font-semibold px-2 py-0.5 rounded bg-sky-600/30 text-sky-200 border border-sky-500/40">
-                        Edit: {selectedSku}
-                      </span>
-                    ) : (
-                      <span className="mt-1 inline-block text-xs text-slate-500">New entry</span>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={startNew}
-                    className="text-xs font-medium text-indigo-400 hover:text-indigo-300 shrink-0"
-                  >
-                    + New SKU
-                  </button>
-                </div>
-              </div>
-
-              <form onSubmit={submitSku} className="flex flex-col flex-1 min-h-0">
-                <div className="overflow-y-auto px-5 py-4 space-y-3 flex-1">
-                  <p className="text-xs text-slate-500">
-                    Fields follow the Excel template <span className="font-mono">sku_master</span> (21 columns).
-                  </p>
-                  {renderMasterSkuFields()}
-                  <div className="pt-2 border-t border-slate-800">
                     <label htmlFor="f-status" className="block text-xs font-medium text-slate-400 mb-1">
                       Status (app only, not in Excel template)
                     </label>
@@ -845,109 +907,235 @@ export default function MasterData() {
                       Inactive excludes the SKU from automatic dataset refresh.
                     </p>
                   </div>
-                </div>
-
-                <div className="shrink-0 border-t border-slate-800 px-5 py-4 space-y-4 bg-slate-950/30">
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={resetForm}
-                      className="flex-1 min-w-[100px] rounded-lg border border-slate-600 py-2.5 text-sm font-semibold text-slate-200 hover:bg-slate-800"
+                  <div>
+                    <label htmlFor="f-use-forecast" className="block text-xs font-medium text-slate-400 mb-1">
+                      Forecasting (app only, not in Excel template)
+                    </label>
+                    <label
+                      htmlFor="f-use-forecast"
+                      className="flex items-center gap-2 w-full bg-slate-950 border border-slate-700 text-sm rounded-lg px-3 py-2 text-white cursor-pointer"
                     >
-                      Reset
-                    </button>
-                    <button
-                      type="submit"
-                      className="flex-[2] min-w-[140px] rounded-lg bg-indigo-600 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500"
-                    >
-                      Save changes
-                    </button>
-                  </div>
-
-                  <div className="rounded-xl border border-dashed border-slate-600 bg-slate-900/50 px-4 py-3 text-center">
-                    <p className="text-xs text-slate-400 mb-2">Bulk upload via Excel (Data 2)</p>
-                    <p className="text-[11px] text-slate-600 mb-3 font-mono break-all">
-                      {MASTER_SKU_EXCEL_COLUMNS_SEMICOLON}
+                      <input
+                        id="f-use-forecast"
+                        type="checkbox"
+                        checked={form.use_forecast}
+                        onChange={(e) => setForm((f) => ({ ...f, use_forecast: e.target.checked }))}
+                        className="rounded border-slate-600"
+                      />
+                      Use forecast
+                    </label>
+                    <p className="text-[11px] text-slate-600 mt-1">
+                      {form.use_forecast
+                        ? "Run Analytics & Buffer uses the statistical forecast pipeline."
+                        : "Run Analytics & Buffer computes the buffer directly from actual demand (no forecast step)."}
                     </p>
-                    <div className="flex flex-wrap justify-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("upload")}
-                        className="text-xs font-medium text-indigo-400 hover:text-indigo-300"
-                      >
-                        Open Bulk Upload tab →
-                      </button>
-                      <span className="text-slate-600">|</span>
-                      <a
-                        href={masterSkuTemplateUrl()}
-                        className="text-xs font-medium text-slate-400 hover:text-slate-300"
-                      >
-                        Download template
-                      </a>
-                    </div>
                   </div>
                 </div>
-              </form>
-            </div>
-          </div>
-        </>
-      )}
+              </div>
 
-      {activeTab === "upload" && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-5xl mx-auto mt-2">
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6">
-            <h2 className="text-xl font-bold text-white mb-2">Validation &amp; preview</h2>
-            <p className="text-slate-400 mb-3 text-sm">
-              Headers must match the <span className="font-mono">sku_master</span>{" "}
-              template (Data 2 sheet) exactly. Download the template for the correct column order.
-            </p>
-            <p className="text-[11px] text-slate-600 mb-4 font-mono break-all leading-relaxed">
-              {MASTER_SKU_EXCEL_COLUMNS_SEMICOLON}
-            </p>
-            <div className="flex flex-wrap gap-3 text-sm mb-4">
-              <a href={masterSkuTemplateUrl()} className="text-indigo-400 hover:text-indigo-300">
-                ↓ Template Master SKU (Data 2)
-              </a>
-            </div>
-            <label className="inline-block bg-indigo-600 hover:bg-indigo-500 text-white font-semibold py-3 px-6 rounded-lg cursor-pointer shadow-lg">
-              {uploadMasterBusy ? "Uploading…" : "Choose Master SKU file"}
-              <input
-                type="file"
-                className="hidden"
-                accept=".xlsx,.xls"
-                disabled={uploadMasterBusy}
-                onChange={(e) => onValidateMasterSku(e.target.files?.[0] ?? null)}
-              />
-            </label>
-            {masterValidation && (
-              <div className="mt-4 text-sm text-slate-300 space-y-2">
-                <p>
-                  Validation: total {String(masterValidation.total_rows ?? 0)} | valid{" "}
-                  {String(masterValidation.valid_rows ?? 0)} | error{" "}
-                  {String(masterValidation.error_rows ?? 0)}
-                </p>
+              <div className="shrink-0 border-t border-slate-800 px-5 py-4 flex flex-wrap gap-2">
                 <button
                   type="button"
-                  disabled={uploadMasterBusy || Number(masterValidation.valid_rows ?? 0) <= 0}
-                  onClick={onCommitMasterSku}
-                  className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-semibold py-2 px-4 rounded-lg"
+                  onClick={resetForm}
+                  className="flex-1 min-w-[100px] rounded-lg border border-slate-600 py-2.5 text-sm font-semibold text-slate-200 hover:bg-slate-800"
                 >
-                  Save valid rows
+                  Reset
                 </button>
-                <p className="text-xs text-slate-500">
-                  SKUs with the same code will be <strong>updated</strong>, not rejected.
-                </p>
+                <button
+                  type="submit"
+                  className="flex-[2] min-w-[140px] rounded-lg bg-indigo-600 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500"
+                >
+                  Save changes
+                </button>
               </div>
-            )}
+            </form>
+          </div>
+        </div>
+      ) : null}
+
+      {activeTab === "upload" && (
+        <div className="mt-2 space-y-6">
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5 md:p-6">
+            <h2 className="text-sm font-bold text-slate-300 uppercase tracking-wide mb-4">Upload flow</h2>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-2">
+              {[
+                {
+                  step: 1,
+                  title: "Choose Excel file",
+                  body: (
+                    <div
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={onDropMasterSku}
+                      className="mt-3 rounded-xl border-2 border-dashed border-slate-600 bg-slate-950/50 px-3 py-6 text-center"
+                    >
+                      <p className="text-2xl text-slate-500" aria-hidden>
+                        ↑
+                      </p>
+                      <p className="text-xs text-slate-400 mt-2">
+                        Drag &amp; drop here or click to choose a file{" "}
+                        <span className="text-slate-300">.xlsx, .xls</span>
+                        <span className="block text-[11px] text-slate-600 mt-1">Max. 10 MB (recommended)</span>
+                      </p>
+                      <label className="mt-3 inline-block cursor-pointer rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500">
+                        {uploadMasterBusy ? "Processing…" : "Choose file"}
+                        <input
+                          type="file"
+                          className="hidden"
+                          accept=".xlsx,.xls"
+                          disabled={uploadMasterBusy}
+                          onChange={(e) => void onValidateMasterSku(e.target.files?.[0] ?? null)}
+                        />
+                      </label>
+                      {masterFile && (
+                        <p className="mt-2 text-[11px] text-emerald-400 truncate" title={masterFile.name}>
+                          {masterFile.name}
+                        </p>
+                      )}
+                      <p className="mt-4 text-left text-[10px] font-semibold uppercase text-slate-500">
+                        Required columns
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {MASTER_SKU_REQUIRED_COLUMNS.map((col) => (
+                          <span
+                            key={col}
+                            className="rounded-md border border-sky-600/60 bg-sky-900/30 px-2 py-0.5 text-[10px] text-sky-300"
+                            title="Required"
+                          >
+                            {col}
+                          </span>
+                        ))}
+                        {MASTER_SKU_EXCEL_COLUMNS.filter(
+                          (col) => !(MASTER_SKU_REQUIRED_COLUMNS as readonly string[]).includes(col)
+                        ).map((col) => (
+                          <span
+                            key={col}
+                            className="rounded-md border border-slate-700 bg-slate-900 px-2 py-0.5 text-[10px] text-slate-400"
+                            title="Optional"
+                          >
+                            {col}
+                          </span>
+                        ))}
+                      </div>
+                      <p className="mt-2 text-[10px] text-slate-600">
+                        Blue columns = required (must have a value per row). All 21 headers must be
+                        present — matching the <span className="font-mono">sku_master</span> template.
+                      </p>
+                      <a
+                        href={masterSkuTemplateUrl()}
+                        className="mt-2 inline-block text-[11px] font-medium text-indigo-400 hover:text-indigo-300"
+                      >
+                        ↓ Download template
+                      </a>
+                    </div>
+                  ),
+                },
+                {
+                  step: 2,
+                  title: "Validation & preview",
+                  body: (
+                    <div className="mt-3 space-y-3 text-sm">
+                      <div className="grid grid-cols-3 gap-2">
+                        <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-2">
+                          <p className="text-[10px] text-slate-500">Total rows</p>
+                          <p className="text-lg font-semibold text-slate-200 tabular-nums">
+                            {masterValidation ? formatIdInt(Number(masterValidation.total_rows ?? 0)) : "—"}
+                          </p>
+                        </div>
+                        <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-2">
+                          <p className="text-[10px] text-slate-500">Valid rows</p>
+                          <p className="text-lg font-semibold text-emerald-400 tabular-nums">
+                            {masterValidation ? formatIdInt(Number(masterValidation.valid_rows ?? 0)) : "—"}
+                          </p>
+                        </div>
+                        <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-2">
+                          <p className="text-[10px] text-slate-500">Error rows</p>
+                          <p className="text-lg font-semibold text-red-400 tabular-nums">
+                            {masterValidation ? formatIdInt(Number(masterValidation.error_rows ?? 0)) : "—"}
+                          </p>
+                        </div>
+                      </div>
+                      {!masterValidation && (
+                        <p className="text-xs text-slate-500">
+                          Upload a file first. Validation results will appear here.
+                        </p>
+                      )}
+                      {masterValidation?.ok === false && (
+                        <p className="text-xs text-red-300">{String(masterValidation.error ?? "Validation failed")}</p>
+                      )}
+                    </div>
+                  ),
+                },
+                {
+                  step: 3,
+                  title: "Confirm & save",
+                  body: (
+                    <div className="mt-3 space-y-3 text-sm">
+                      <ul className="space-y-1.5 text-xs text-slate-400">
+                        <li className="flex justify-between gap-2">
+                          <span>File</span>
+                          <span className="text-slate-200 truncate max-w-[10rem]">
+                            {masterFile?.name ?? "—"}
+                          </span>
+                        </li>
+                        <li className="flex justify-between gap-2">
+                          <span>Total rows</span>
+                          <span className="text-slate-200">
+                            {masterValidation ? String(masterValidation.total_rows ?? 0) : "—"}
+                          </span>
+                        </li>
+                        <li className="flex justify-between gap-2">
+                          <span>Will be saved</span>
+                          <span className="text-emerald-400 font-medium">
+                            {String(masterValidation?.valid_rows ?? 0)}
+                          </span>
+                        </li>
+                        <li className="flex justify-between gap-2">
+                          <span>Will be skipped</span>
+                          <span className="text-amber-300 font-medium">
+                            {String(masterValidation?.error_rows ?? 0)}
+                          </span>
+                        </li>
+                      </ul>
+                      <p className="text-[11px] text-slate-500">
+                        SKUs with the same code will be <strong className="text-slate-300">updated</strong>,
+                        not rejected — new SKUs are inserted.
+                      </p>
+                      <button
+                        type="button"
+                        disabled={
+                          uploadMasterBusy || Number(masterValidation?.valid_rows ?? 0) <= 0
+                        }
+                        onClick={() => void onCommitMasterSku()}
+                        className="w-full rounded-xl bg-indigo-600 py-3 text-sm font-bold text-white shadow-lg hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        Save valid rows
+                      </button>
+                    </div>
+                  ),
+                },
+              ].map((block) => (
+                <div
+                  key={block.step}
+                  className="relative rounded-xl border border-slate-800 bg-slate-950/30 p-4 md:border-slate-800"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="flex h-8 w-8 items-center justify-center rounded-full bg-indigo-600 text-sm font-bold text-white">
+                      {block.step}
+                    </span>
+                    <h3 className="text-sm font-bold text-white">{block.title}</h3>
+                  </div>
+                  {block.body}
+                </div>
+              ))}
+            </div>
           </div>
 
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl p-6">
-            <h2 className="text-xl font-bold text-white mb-2">Error preview</h2>
+          <div className="rounded-2xl border border-slate-800 bg-slate-900 shadow-xl p-6 max-w-5xl">
+            <h2 className="text-lg font-bold text-white mb-2">Error detail</h2>
             {!masterValidation && <p className="text-slate-500 text-sm">No validation yet.</p>}
             {masterValidation && (
               <div className="text-slate-300 text-sm space-y-2">
-                {Array.isArray(masterValidation.errors) &&
-                masterValidation.errors.length > 0 ? (
+                {Array.isArray(masterValidation.errors) && masterValidation.errors.length > 0 ? (
                   <div className="space-y-2">
                     {(masterValidation.errors as { row?: unknown; message?: unknown }[])
                       .slice(0, 20)

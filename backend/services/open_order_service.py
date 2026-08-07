@@ -191,6 +191,39 @@ def receive_po(
     return {"po": po_to_dict(po), "recalc": recalc}
 
 
+def auto_receive_all_due_pos(db: Session) -> Dict[str, Any]:
+    """Auto-receive confirmed POs whose lead time has elapsed.
+
+    "Elapsed" is judged against each SKU's own buffer reference date
+    (`DDMRPBuffer.start_date`, the app's simulated "today" — see
+    `api/analytics.py:get_replenishment`), not wall-clock date, so this stays
+    consistent with the NFE/zone math the rest of the operational loop uses.
+    Received qty moves from open order (OP) into on-hand stock (OH) via
+    `receive_po`.
+    """
+    due = (
+        db.query(PurchaseOrder)
+        .join(DDMRPBuffer, DDMRPBuffer.id == PurchaseOrder.buffer_id)
+        .filter(
+            PurchaseOrder.status == PO_STATUS_CONFIRMED,
+            DDMRPBuffer.start_date.isnot(None),
+            PurchaseOrder.expected_receipt_date <= DDMRPBuffer.start_date,
+        )
+        .all()
+    )
+
+    received: List[Dict[str, Any]] = []
+    failed: List[Dict[str, Any]] = []
+    for po in due:
+        try:
+            result = receive_po(db, po.id)
+            received.append(result["po"])
+        except ValueError as e:
+            failed.append({"po_id": int(po.id), "error": str(e)})
+
+    return {"checked": len(due), "received": len(received), "pos": received, "failed": failed}
+
+
 def cancel_po(db: Session, po_id: int) -> Dict[str, Any]:
     po = _get_po(db, po_id)
     if po.status == PO_STATUS_RECEIVED:
