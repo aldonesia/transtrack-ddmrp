@@ -15,7 +15,7 @@ from models import (
     SkuOperationalState,
 )
 from services import open_order_service as po_svc
-from services.operational_nfe import recalc_operational_nfe
+from services.operational_nfe import recalc_operational_nfe, seed_operational_state_for_buffer
 
 
 def _seed_session():
@@ -168,6 +168,92 @@ class TestPurchaseOrderService(unittest.TestCase):
 
         listed = po_svc.list_pos(self.db, sku="1000001")
         self.assertEqual(listed["rows"][0]["status"], "confirmed")
+
+    def test_rerun_pipeline_carries_forward_on_hand(self):
+        # Receive a PO under buffer A -> on_hand grows past its TOY (196).
+        po = po_svc.create_draft_po(self.db, "1000001", 100.0)
+        po_svc.confirm_po(self.db, po.id)
+        po_svc.receive_po(self.db, po.id)
+        state = (
+            self.db.query(SkuOperationalState)
+            .filter(SkuOperationalState.sku == "1000001")
+            .first()
+        )
+        oh_after_receive = float(state.on_hand)
+        self.assertGreater(oh_after_receive, 196.0)
+
+        # Simulate a pipeline re-run: a brand-new buffer B goes active with a
+        # different TOY. Seeding must carry forward real on-hand, not reset to
+        # the new buffer's TOY (250) or any other passed-in default.
+        new_start = self.buf.start_date + timedelta(days=7)
+        buf_b = DDMRPBuffer(
+            sku="1000001",
+            version="v-test-2",
+            start_date=new_start,
+            end_date=new_start + timedelta(days=6),
+            status="Active",
+            dlt=7,
+            adu=15.4,
+            vf_opt=0.5,
+            ltf_opt=1.0,
+            tor=70.0,
+            toy=250.0,
+            tog=400.0,
+            score="0",
+        )
+        self.db.add(buf_b)
+        self.db.flush()
+
+        seed_operational_state_for_buffer(self.db, "1000001", buf_b, on_hand=buf_b.toy)
+        self.db.commit()
+
+        new_state = (
+            self.db.query(SkuOperationalState)
+            .filter(SkuOperationalState.sku == "1000001")
+            .first()
+        )
+        self.assertEqual(int(new_state.buffer_id), int(buf_b.id))
+        self.assertAlmostEqual(float(new_state.on_hand), oh_after_receive)
+        self.assertNotAlmostEqual(float(new_state.on_hand), 250.0)
+
+    def test_auto_receive_uses_current_active_buffer_not_stale_po_buffer_id(self):
+        # PO confirmed under buffer A (start=2024-05-01); expected_receipt_date
+        # lands after A's start_date, so it's correctly NOT due yet under A.
+        future_order_date = self.buf.start_date + timedelta(days=3)
+        po = po_svc.create_draft_po(self.db, "1000001", 40.0, order_date=future_order_date)
+        po_svc.confirm_po(self.db, po.id)
+        self.assertEqual(int(po.buffer_id), int(self.buf.id))
+        self.assertGreater(po.expected_receipt_date, self.buf.start_date)
+
+        # Pipeline re-run before the PO is received: buffer A archived, buffer B
+        # active with a later start_date that now covers the PO's expected receipt.
+        self.buf.status = "Archived"
+        buf_b = DDMRPBuffer(
+            sku="1000001",
+            version="v-test-2",
+            start_date=po.expected_receipt_date,
+            end_date=po.expected_receipt_date + timedelta(days=6),
+            status="Active",
+            dlt=7,
+            adu=15.4,
+            vf_opt=0.5,
+            ltf_opt=1.0,
+            tor=70.0,
+            toy=250.0,
+            tog=400.0,
+            score="0",
+        )
+        self.db.add(buf_b)
+        self.db.commit()
+
+        # Joining on the PO's own (now-archived) buffer_id would still see A's
+        # stale start_date and wrongly judge this not due; must use B instead.
+        result = po_svc.auto_receive_all_due_pos(self.db)
+        self.assertEqual(result["checked"], 1)
+        self.assertEqual(result["received"], 1)
+
+        listed = po_svc.list_pos(self.db, sku="1000001")
+        self.assertEqual(listed["rows"][0]["status"], "received")
 
 
 if __name__ == "__main__":

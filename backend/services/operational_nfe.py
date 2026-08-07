@@ -200,14 +200,24 @@ def seed_operational_state_for_buffer(
     *,
     on_hand: Optional[float] = None,
 ) -> None:
-    """Initialize operational OH when a new active buffer is saved (default OH=TOY)."""
+    """Initialize operational OH when a new active buffer is saved.
+
+    Re-running the pipeline (new forecast, new GA, or a toggled `use_forecast`)
+    must not discard real stock movement: if the SKU already has operational
+    state, its current on-hand (which reflects any POs received under the
+    previous buffer) carries forward into the new buffer. `on_hand` is only
+    the seed for a SKU's very first buffer — falls back to TOY (v1) or
+    `initial_inventory` (v2) when there's no prior state to carry forward.
+    """
     if not buf.start_date:
         return
     existing = db.query(SkuOperationalState).filter(SkuOperationalState.sku == sku).first()
+    carried_on_hand = float(existing.on_hand) if existing else None
     if existing:
         db.delete(existing)
         db.flush()
-    ensure_operational_state(db, sku, buf, buf.start_date, on_hand=on_hand)
+    seed = carried_on_hand if carried_on_hand is not None else on_hand
+    ensure_operational_state(db, sku, buf, buf.start_date, on_hand=seed)
 
 
 def build_recalc_summary(

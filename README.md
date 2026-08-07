@@ -53,6 +53,16 @@ Membutuhkan Python dengan `pandas` (sama seperti menjalankan API).
 
 Pada startup, backend menambahkan kolom opsional di tabel `sku_master` jika belum ada (SQLite / Postgres); untuk Postgres produksi disarankan Alembic.
 
+#### Field `use_forecast` (app-only)
+
+- Kolom `sku_master.use_forecast` (boolean, default `true`, `NULL` diperlakukan sebagai `true`) — tidak ada di template Excel, hanya diatur lewat modal **Edit SKU** di UI atau `POST /api/master/skus`.
+- Menentukan pipeline mana yang dipakai `POST /api/analytics/run` (dan `integration/run`, karena keduanya memanggil fungsi yang sama) untuk SKU tersebut:
+  - `true` (default) → pipeline **v1** — forecast statistik → klasifikasi ADI-CV² → GA (`services/hybrid_*`).
+  - `false` → pipeline **v2** — QD langsung dari demand aktual, tanpa bergantung pada forecast untuk simulasi (`services/buffer_v2/*`); forecast tetap dijalankan untuk metadata `forecast_best_model`/`forecast_metrics` di response.
+- Kedua pipeline menulis ke tabel `ddmrp_buffer`/`ddmrp_buffer_detail` yang sama; Replenishment dan PO tidak perlu tahu pipeline mana yang menghasilkan buffer aktif.
+- Modal **Edit SKU** juga menyembunyikan `Criticality`/`ABC Class`/`XYZ Class`/`Qmax` dari input manual (nilainya tetap dibaca-tulis lewat upload Excel bulk), mengubah `Vendor Type` menjadi pilihan `Local`/`Import`, dan menghitung otomatis `Holding Cost/day (IDR)` = rate × harga beli serta `Penalty/unit (IDR)` = lost sale rate × harga jual (read-only, bukan input).
+- Tampilan **Bulk Upload** di Master SKU memakai wizard 3 langkah yang sama gayanya dengan Master Demand (drag & drop, badge kolom wajib/opsional, ringkasan validasi, konfirmasi simpan) — hanya menerima `.xlsx`/`.xls` (tanpa CSV) dan selalu upsert per SKU.
+
 #### Impor penuh `Data 2.xlsx` (CLI)
 
 Skrip: `backend/scripts/import_data2_xlsx.py` — membaca sheet **`sku_master`** dan **`sales`**, memakai parser yang sama dengan API upload, lalu upsert ke `sku_master` + `daily_record`.
@@ -84,6 +94,17 @@ Kolom minimal (salah satu bentuk header yang didukung):
 
 Untuk file yang diekspor dari Excel dengan sel tanggal sebagai angka, **serial hari Excel** (mis. `45810`) didukung pada upload (`api/master`) selama nilainya dalam rentang realistis (≈1970–); tanggal ISO/`YYYY-MM-DD` tetap didukung.
 
+#### Tambah / edit satu baris demand (UI)
+
+Selain upload massal, ada endpoint untuk satu baris (dipakai modal **New demand** / klik baris di tabel demand pada UI):
+
+| Method | Path | Keterangan |
+|--------|------|------------|
+| `POST` | `/api/master/demand` | Buat satu baris — body: `{ "sku", "date", "demand", "promo_discount?" }`. 409 jika kombinasi tanggal+SKU sudah ada. |
+| `PUT` | `/api/master/demand/{id}` | Update satu baris (sama body). 409 jika tanggal+SKU baru bentrok baris lain. |
+
+`promo_discount` disimpan sebagai pecahan (`0`–`1`); UI memasukkan nilai persen (`0`–`100`) dan mengonversi sebelum kirim.
+
 ## Latest Run per SKU
 
 - Endpoint run utama: `POST /api/analytics/run`
@@ -99,13 +120,13 @@ Untuk file yang diekspor dari Excel dengan sel tanggal sebagai angka, **serial h
 | **3** | Analytics — Classify & GA | `POST /api/analytics/optimize` atau `run` | TOR/TOY/TOG, VF/LTF optimal, klasifikasi ADI-CV² |
 | **4** | Replenishment | `GET /api/analytics/replenishment` | Jendela order qty, NFE, zona per hari |
 
-Setelah **run** berhasil, backend menyimpan buffer aktif (`ddmrp_buffer` + `ddmrp_buffer_detail`) dan menginisialisasi state operasional (`sku_operational_state`, OH awal = TOY).
+Setelah **run** berhasil, backend menyimpan buffer aktif (`ddmrp_buffer` + `ddmrp_buffer_detail`) dan menyiapkan state operasional (`sku_operational_state`). Jika SKU **belum pernah** punya buffer, OH awal = TOY buffer baru (v1) atau `initial_inventory` dari master (v2). Jika SKU **sudah** punya state operasional (dari buffer sebelumnya), OH **dibawa terus** (carry-forward) — run ulang pipeline tidak menghapus stok fisik yang sudah bertambah dari PO yang diterima; hanya TOR/TOY/TOG yang diperbarui.
 
 Rencana detail open order: `resources_ext/IMPLEMENTATION_PLAN_OPEN_ORDER.md`.
 
 ## Purchase orders & operational NFE (loop operasional)
 
-Setelah buffer aktif, rekomendasi replenishment bisa dikonfirmasi sebagai **purchase order (PO)**. PO mengubah **open order (OP)** dalam perhitungan NFE **tanpa** menjalankan ulang GA.
+Setelah buffer aktif, rekomendasi replenishment bisa dikonfirmasi sebagai **purchase order (PO)**. PO mengubah **open order (OP)** dalam perhitungan NFE **tanpa** menjalankan ulang GA. UI: halaman **Purchase Orders** (`/purchase-orders`) — daftar semua PO lintas SKU dengan filter status/SKU, ringkasan draft/confirmed/received/cancelled, dan aksi confirm/receive/cancel manual.
 
 ### Prinsip
 
@@ -116,6 +137,20 @@ NFE = On Hand (OH) + Open Order (OP) − Qualified Demand (QD)
 - **TOR / TOY / TOG** — tetap dari hasil RUN 3 terakhir sampai user menjalankan pipeline lagi.
 - **QD** — demand hari ini + forecast horizon H+1…H+DLT (jika > ADU), dari `ForecastRun` + `DailyRecord` (selaras notebook).
 - **OP** — jumlah PO berstatus `confirmed` yang belum diterima (`expected_receipt_date` > hari acuan).
+- **OH** — stok fisik operasional; naik saat PO **received** (manual atau auto-receive). Run ulang pipeline **tidak** mereset OH (lihat catatan carry-forward di atas).
+
+### Auto-receive
+
+PO **confirmed** otomatis pindah menjadi **received** (OP → OH) begitu `expected_receipt_date`-nya melewati hari acuan SKU tersebut (`DDMRPBuffer.start_date` aktif — bukan tanggal kalender asli):
+
+- **Background job** — thread terpisah di `main.py`, interval `AUTO_RECEIVE_INTERVAL_MINUTES` (default `30`), aktif/nonaktif lewat `AUTO_RECEIVE_ENABLED` (default `1`).
+- **Sweep oportunistik** — dijalankan juga di awal `GET /api/purchase-orders`, `GET /api/analytics/replenishment`, `POST /api/analytics/recalc-operational`, dan `GET /api/dashboard-summary`, supaya data selalu segar tanpa menunggu jadwal.
+- Sweep selalu mengacu ke **buffer aktif SKU saat ini**, bukan `buffer_id` yang tercatat di PO — jika Analytics & Buffer di-run ulang sebelum PO diterima, PO lama itu tetap terdeteksi due terhadap "hari ini" yang baru.
+
+| Method | Path | Keterangan |
+|--------|------|------------|
+| `POST` | `/api/purchase-orders/auto-receive-due` | Trigger manual sweep (dipakai tombol **Check auto-receive now**) |
+| `GET` | `/api/purchase-orders/auto-receive-status` | Status job: `enabled`, `interval_minutes`, `running`, `last_run_at`, `last_checked`, `last_received` |
 
 ### API Purchase order
 
@@ -125,7 +160,7 @@ Prefix: `/api/purchase-orders`
 |--------|------|------------|
 | `POST` | `/` | Buat PO `draft` — body: `{ "sku", "qty", "order_date?", "notes?" }` |
 | `POST` | `/{id}/confirm` | Konfirmasi draft → `confirmed` + recalc NFE |
-| `POST` | `/{id}/receive` | Terima barang — body opsional: `{ "receipt_qty" }` |
+| `POST` | `/{id}/receive` | Terima barang manual — body opsional: `{ "receipt_qty" }` |
 | `POST` | `/{id}/cancel` | Batalkan `draft` atau `confirmed` |
 | `GET` | `/` | List — query: `sku`, `status`, `limit`, `offset` |
 | `GET` | `/{id}` | Detail satu PO |
@@ -369,13 +404,13 @@ Halaman beranda menampilkan ringkasan operasional buffer aktif (**Ringkasan Oper
 
 ### Fitur Dashboard (sesuai mockup IDAS)
 
-- **Sidebar:** brand **IDAS** + subtitle *Inventory Decision Analytic System*, grup menu **Operasional**, item **Beranda & KPI**, **Master Data**, **Master Demand**, **Analytics & Buffer**, **Replenishment** (badge merah = jumlah SKU perlu replenishment). Footer: **Buffer version**.
-- **Header utama:** **Ringkasan Operasional**; subtitle unit tampilan **CTN** + waktu refresh terakhir; **Status sistem** (Aktif); tombol **Eksekusi Semua Order** → `/replenishment`.
+- **Sidebar:** brand **IDAS** + subtitle *Inventory Decision Analytic System*, grup menu **Operasional**, item **Dashboard**, **Master Data**, **Master Demand**, **Analytics & Buffer**, **Replenishment** (badge merah = jumlah SKU perlu replenishment), **Purchase Orders**.
+- **Header utama:** **Operational Summary**; indikator **System status** (Active).
 - **Alert merah** jika ada SKU zona `RED`.
-- **Empat kartu KPI:** Total SKU, Red zone, Needs replenishment, Confirmed PO (angka dari `GET /api/dashboard-summary`).
-- Halaman **Replenishment:** rekomendasi order, buffer position (TOR/TOY/TOG), **Create PO**, export CSV, riwayat PO.
-- **Tabel SKU prioritas kritis:** kolom **Prioritas** (peringkat) dan **Kode SKU** — hanya SKU zona merah, urut defisit NFE menurun (maks 5 baris + tautan “Lihat semua”).
-- **Kolom kanan:** widget **Status sistem** (scheduler, refresh harian, status nightly, SKU diproses, waktu refresh), **Distribusi zona buffer**, **Rekomendasi cepat**.
+- **Empat kartu KPI:** Total SKU, Red zone, Needs replenishment, **Confirmed PO** (klik → navigasi ke `/purchase-orders`).
+- Halaman **Replenishment:** rekomendasi order per SKU (tabel jadwal per tanggal) dan buffer position (TOR/TOY/TOG). Widget ringkasan (zona merah/kuning/hijau, total order hari ini, confirmed PO), panel **Quick actions**, dan **riwayat PO** sudah **tidak ditampilkan** di halaman ini — riwayat & aksi PO sepenuhnya di halaman **Purchase Orders**. Angka tidak lagi menampilkan satuan (EA/PCS/…), dan NFE selalu ditampilkan bulat.
+- **Tabel SKU prioritas kritis:** kolom **Priority** dan **SKU Code** — hanya SKU zona merah, urut defisit NFE menurun (maks 5 baris). Tautan **View all** membuka **modal in-page** berisi seluruh SKU lintas zona (bukan lagi navigasi ke Replenishment).
+- **Kolom kanan:** widget **System status** (scheduler, refresh harian, status nightly, SKU diproses, waktu refresh) dan **Buffer zone distribution**. Widget **Quick recommendations** sudah dihapus.
 
 Penjelasan KPI (backend, `GET /api/dashboard-summary`):
 
@@ -393,7 +428,7 @@ Penjelasan KPI (backend, `GET /api/dashboard-summary`):
 ### Catatan unit
 
 - Semua perhitungan memakai **unit perencanaan** dari `SKUMaster.unit` (PCS, EA, CTN, …) **tanpa konversi karton**.
-- Label di UI mengikuti unit dari API (`operational.unit`, `replenishment.unit`).
+- API tetap mengembalikan `operational.unit` / `replenishment.unit`, tapi halaman **Replenishment** sengaja tidak lagi menampilkan label satuan di angka — hanya angka polos (qty, TOR/TOY/TOG, NFE).
 
 ### Arti Status Nightly
 
@@ -463,6 +498,7 @@ Setelah reset: upload master/demand lewat UI atau jalankan `backend/scripts/impo
 2. Buka Replenishment, pilih SKU — pastikan ada saran order & NFE.
 3. **Create PO** → konfirmasi qty → cek pesan sukses dan `operational.open_order` naik.
 4. `POST /api/analytics/recalc-operational?sku=...` atau **Recalc & refresh** — tabel & buffer bar ikut terbarui.
-5. (Opsional) `POST /api/purchase-orders/{id}/receive` — OH naik, OP turun setelah recalc.
+5. (Opsional) `POST /api/purchase-orders/{id}/receive` — OH naik, OP turun setelah recalc. Atau tunggu **auto-receive** (background job / sweep oportunistik) memindahkan PO `confirmed` → `received` otomatis setelah `expected_receipt_date` melewati hari acuan buffer aktif.
 6. Dashboard: `confirmed_po_skus` dan `open_order_qty` konsisten dengan PO di DB.
+7. Jalankan ulang `POST /api/analytics/run` untuk SKU yang sama — pastikan `operational.on_hand` di Replenishment **tidak** reset ke TOY baru, melainkan tetap membawa OH terakhir (termasuk PO yang sudah diterima).
 

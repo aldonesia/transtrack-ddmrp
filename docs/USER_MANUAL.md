@@ -20,6 +20,7 @@
 | Master Demand | `/master/demand` | https://transtrack-ddmrp.skom.my.id/master/demand |
 | Analytics & Buffer | `/analytics` | https://transtrack-ddmrp.skom.my.id/analytics |
 | Replenishment | `/replenishment` | https://transtrack-ddmrp.skom.my.id/replenishment |
+| Purchase Orders | `/purchase-orders` | https://transtrack-ddmrp.skom.my.id/purchase-orders |
 
 Semua kuantitas perencanaan dalam **PCS / EA** (satu unit per SKU dari master).
 
@@ -71,8 +72,14 @@ flowchart LR
 - Menjalankan **genetic algorithm (GA)** untuk mencari kombinasi **VF** (variability factor) dan **LTF** (lead time factor) optimal.
 - Mensimulasikan buffer DDMRP dan menghitung **TOR** (top of red), **TOY** (top of yellow), **TOG** (top of green).
 - Hasil disimpan sebagai buffer **Active** (`ddmrp_buffer` + detail per hari).
-- **On Hand operasional** diinisialisasi = **TOY** (posisi awal setelah buffer dibuat).
+- **On Hand operasional**: untuk SKU yang **baru pertama kali** dibuatkan buffer, diinisialisasi = **TOY**. Untuk SKU yang **sudah** punya buffer sebelumnya, OH **dibawa terus** dari posisi terakhir (termasuk PO yang sudah diterima) — lihat [§5](#po-dan-run-ulang-buffer).
 - Di UI: **Optimize (GA)** (butuh forecast sebelumnya) atau bagian dari **Run full pipeline**.
+
+**Pakai forecast atau tidak** — di modal **Edit SKU** (Master Data) ada toggle **Use forecast**:
+
+- **Aktif (default)** — RUN 2+3 memakai forecast statistik sebagai dasar simulasi buffer.
+- **Nonaktif** — buffer dihitung langsung dari demand aktual (tanpa bergantung pada forecast untuk simulasi), memakai mesin buffer v2. Forecast tetap dijalankan untuk info model di tab **Forecasting**, tapi tidak menentukan TOR/TOY/TOG.
+- Berlaku untuk **Run full pipeline** di Analytics & Buffer maupun scheduler harian — hasilnya tetap tersimpan sebagai buffer **Active** biasa, tidak ada perbedaan di halaman Replenishment.
 
 > **Catatan:** Dalam simulasi GA (RUN 3), **open order** sudah dimodelkan di dalam mesin simulasi. Itu berbeda dari **PO operasional** di RUN 4 (lihat bagian Purchase order).
 
@@ -106,19 +113,36 @@ Master SKU  →  Master Demand  →  Analytics RUN 2–3  →  Replenishment RUN
 
 ### Langkah 1 — Master SKU
 
-1. Buka **Master Data**.
-2. Unduh template: tombol unduh template / `GET /api/master/template/master-sku`.
-3. Isi Excel (kolom wajib: Material Number, Material Group, Lead Time_Days, harga, MOQ, dll.).
-4. Unggah file → sistem **insert** SKU baru atau **update** jika kode sama.
-5. Gunakan filter (grup, lead time, status) dan pencarian untuk menemukan SKU.
+**Satu SKU (modal):**
+
+1. Buka **Master Data** → tombol **+ New SKU**, atau klik baris SKU di tabel untuk **Edit**.
+2. Isi field wajib (Material Number, Material Group, Unit, Lead Time_Days, MOQ, Sales Price, Purchase Price, Holding Cost Rate/day, Lost Sale Rate/Each, Order Cost, Initial Inventory, Target Service Level).
+3. **Vendor Type** berupa pilihan **Local** / **Import**. **Holding Cost/day (IDR)** dan **Penalty/unit (IDR)** dihitung otomatis (rate × harga) dan ditampilkan read-only, bukan input.
+4. Toggle **Use forecast** menentukan pipeline yang dipakai Analytics & Buffer untuk SKU ini — lihat [§2](#2-alur-pipeline-run-2--3--4).
+5. Klik **Save changes**.
+
+> Field **Criticality**, **ABC Class**, **XYZ Class**, dan **Qmax** tidak lagi ada di form manual (tetap tersimpan kalau sebelumnya diisi lewat upload Excel, dan tetap bisa diisi lewat upload Excel). **Qmax** juga disembunyikan karena nilainya konstan.
+
+**Banyak SKU sekaligus (Bulk Upload):**
+
+1. Buka **Master Data** → tab **Bulk Upload**.
+2. Unduh template lewat tautan di langkah 1 (atau `GET /api/master/template/master-sku`).
+3. Isi Excel (kolom wajib ditandai badge biru: Material Number, Material Group, Lead Time_Days, Sales Price, Purchase Price, Holding Cost Rate/day, Lost Sale Rate/Each, Logistic Cost/Order, MOQ; kolom lain opsional).
+4. Drag & drop atau pilih file (`.xlsx`/`.xls`) — langkah 2 menampilkan ringkasan total/valid/error baris.
+5. Klik **Save valid rows** — SKU baru **insert**, kode yang sudah ada **update**.
 
 **Tips:** Status **Active** diperlukan agar SKU ikut pipeline analytics.
 
 ### Langkah 2 — Master Demand
 
+**Satu baris (modal):** tombol **+ New demand** di halaman Master Demand, atau klik baris di tabel demand untuk **Edit** — isi SKU, tanggal, demand, dan promo discount (opsional, dalam persen).
+
+**Banyak baris (upload):**
+
 1. Buka **Master Demand**.
-2. Unggah file demand (format `Date`, `ID Item` / `SKU`, `Demand`).
-3. Setelah unggah, cek di **Analytics** bahwa dataset status menunjukkan data siap.
+2. Unggah file demand (format `Date`, `ID Item` / `SKU`, `Demand`; `.xlsx`, `.xls`, atau `.csv`).
+3. Pilih mode simpan: **insert new rows only** (lewati tanggal+SKU yang sudah ada) atau **overwrite existing rows**.
+4. Setelah unggah, cek di **Analytics** bahwa dataset status menunjukkan data siap.
 
 ### Langkah 3 — Analytics & Buffer (RUN 2 + 3)
 
@@ -137,7 +161,7 @@ Parameter GA (service level, populasi, generasi) bisa disesuaikan di UI sebelum 
 
 - Model forecast terbaik, ADU, metrik.
 - Klasifikasi ADI–CV², buffer optimal, KPI simulasi.
-- Buffer **Active** tersimpan di database; state operasional diinisialisasi (on-hand awal = TOY).
+- Buffer **Active** tersimpan di database; state operasional disiapkan — on-hand awal = TOY hanya untuk SKU baru, kalau tidak OH lama dibawa terus (lihat catatan RUN 3 di atas).
 
 ### Langkah 4 — Replenishment (RUN 4)
 
@@ -149,9 +173,10 @@ Parameter GA (service level, populasi, generasi) bisa disesuaikan di UI sebelum 
    - **Jendela order** — rekomendasi per hari dalam horizon lead time.
 
 4. **Recalc & refresh** — perbarui NFE dari demand/forecast/PO terkini tanpa menjalankan ulang GA.
-5. **Create PO** — modal tanggal + qty, lalu **Create & confirm PO** (langsung status confirmed).
+5. **Create PO** — tombol per SKU, atau tombol **Create PO** di kolom **Action** untuk baris zona RED/YELLOW — modal tanggal + qty, lalu **Create & confirm PO** (langsung status confirmed).
 6. **Export CSV** — unduh saran order dan PO confirmed.
-7. **Riwayat PO** — daftar PO SKU (baca saja; tanpa terima/batalkan di UI).
+
+> Halaman ini sengaja disederhanakan: widget ringkasan (zona merah/kuning/hijau, total order hari ini, confirmed PO), panel **Quick actions**, dan **riwayat PO** tidak ditampilkan di sini. Untuk melihat/mengelola semua PO (termasuk riwayat, confirm/receive/cancel manual), buka halaman **Purchase Orders** ([§5](#5-purchase-order-loop-operasional)). Angka di tabel tidak menampilkan satuan, dan NFE selalu bulat.
 
 ---
 
@@ -164,9 +189,9 @@ Menampilkan ringkasan dari buffer aktif semua SKU:
 | Total SKU | Jumlah SKU dengan buffer aktif |
 | Red zone | SKU dengan NFE di zona merah hari ini |
 | Needs replenishment | SKU dengan saran order > 0 |
-| Confirmed PO | SKU dengan PO confirmed yang belum diterima |
+| Confirmed PO | SKU dengan PO confirmed yang belum diterima — kartu ini bisa **diklik**, langsung membuka halaman **Purchase Orders** |
 
-**Tabel prioritas kritis** — hingga 5 SKU zona merah, diurutkan defisit NFE.
+**Tabel prioritas kritis** — hingga 5 SKU zona merah, diurutkan defisit NFE. Tautan **View all** membuka **modal** berisi seluruh SKU lintas zona langsung di halaman ini (tidak lagi berpindah ke Replenishment).
 
 **Status sistem** — scheduler refresh harian (default 01:00), job nightly terakhir. Refresh malam menjalankan **RUN 2 + 3** untuk semua SKU aktif — lihat [§5 PO dan run ulang buffer](#po-dan-run-ulang-buffer) jika ada PO confirmed.
 
@@ -207,9 +232,9 @@ NFE = On Hand (OH) + Open Order (OP) − Qualified Demand (QD)
 | **YELLOW** | NFE antara TOR dan TOY |
 | **GREEN** | NFE di atas TOY |
 
-### Alur PO di aplikasi (Replenishment)
+### Dua cara membuat PO
 
-Di **UI IDAS** hanya ada satu langkah operasional: **membuat dan mengonfirmasi PO sekaligus**. Tidak ada menu **Draft**, **Terima barang (Receive)**, atau **Batalkan (Cancel)** di layar.
+**Cepat, dari Replenishment** — satu klik langsung confirmed:
 
 ```mermaid
 flowchart LR
@@ -223,71 +248,53 @@ flowchart LR
 
 | Langkah | Di layar |
 |---------|----------|
-| 1 | Pilih SKU yang punya buffer aktif |
-| 2 | Periksa **Posisi operasional** (On Hand, Open Order, NFE, zona, **suggested_order_qty**) |
-| 3 | Buat PO lewat **Create PO** (panel kanan) atau tombol **Create PO** di kolom **Action** (baris **RED** / **YELLOW** di tabel jadwal) |
+| 1 | Pilih SKU yang punya buffer aktif di **Replenishment** |
+| 2 | Periksa **Posisi operasional** (On Hand, Open Order, NFE, zona) di kartu **Current buffer position** |
+| 3 | Klik **Create PO** di kolom **Action** pada baris zona **RED** / **YELLOW** di tabel jadwal |
 | 4 | Di modal: pilih **tanggal order**, sesuaikan **qty** (dibulatkan ke **MOQ** dari master) |
 | 5 | Klik **Create & confirm PO** — PO langsung tercatat **confirmed** (bukan dua langkah terpisah di UI) |
 | 6 | Setelah sukses: **Open order** naik, **NFE** dan zona diperbarui, notifikasi hijau menampilkan nomor PO |
-| 7 | **Recalc & refresh** — perbarui NFE tanpa PO baru jika demand/forecast berubah |
-| 8 | **Show PO history** — lihat daftar PO SKU (nomor, status, qty, tanggal); **hanya baca**, tanpa tombol terima/batalkan |
 
 Opsi **Force create** (checkbox di modal, jika tidak ada saran order): melewati aturan “satu PO confirmed per SKU per hari order” — untuk uji saja.
 
-### Status PO yang terlihat user
+**Lengkap, dari halaman Purchase Orders** (`/purchase-orders`) — kelola seluruh siklus hidup PO lintas SKU:
 
-| Status di riwayat | Arti untuk operasi harian |
-|-------------------|---------------------------|
-| **confirmed** | PO yang Anda buat dari Replenishment — **memengaruhi Open order** dan NFE |
-| Status lain (`draft`, `received`, `cancelled`) | Bisa muncul jika data dibuat lewat **API/backend**; **tidak dikelola dari UI** saat ini |
+| Aksi | Keterangan |
+|------|------------|
+| Filter | Per SKU dan/atau status (`draft`/`confirmed`/`received`/`cancelled`) |
+| **Confirm** | Untuk PO `draft` |
+| **Receive now** | Terima manual untuk PO `confirmed` (biasanya tidak perlu — lihat **Auto-receive** di bawah) |
+| **Cancel** | Untuk PO `draft` atau `confirmed` |
+| **Check auto-receive now** | Trigger manual sweep auto-receive (job background jalan otomatis tiap 30 menit) |
 
-> **Catatan teknis:** Backend menyimpan status tambahan untuk integrasi. Panduan ini mengacu **hanya perilaku UI** yang tersedia untuk pengguna.
+### Auto-receive
 
-### Setelah PO confirmed (apa yang bisa dilakukan di UI)
+PO **confirmed** otomatis berubah menjadi **received** — OP turun, OH naik — begitu `expected_receipt_date` (tanggal order + lead time) melewati hari acuan buffer aktif SKU tersebut. Tidak perlu klik apa pun; berjalan lewat job background (default tiap 30 menit) dan setiap kali halaman Purchase Orders / Replenishment / Dashboard dimuat. Widget kecil di halaman Purchase Orders menampilkan status job (aktif/tidak, jadwal berikutnya, hasil sweep terakhir).
 
-| Aksi di UI | Dampak |
-|------------|--------|
-| **Recalc & refresh** | Hitung ulang NFE/zona dari OH, OP, QD terkini; PO confirmed tetap ada |
-| **Run full pipeline** (Analytics) | Buffer & TOR/TOY/TOG baru; lihat [PO dan run ulang buffer](#po-dan-run-ulang-buffer) |
-| **Buat PO lagi** (hari order lain / force) | PO confirmed tambahan sesuai aturan bisnis |
+### Status PO
 
-Tidak tersedia di UI: ubah PO menjadi “sudah diterima”, batalkan PO, atau mengedit qty PO setelah confirm.
+| Status | Arti untuk operasi harian |
+|--------|---------------------------|
+| **draft** | Belum dikonfirmasi — belum memengaruhi Open order |
+| **confirmed** | **Memengaruhi Open order** dan NFE; menunggu diterima (manual atau auto-receive) |
+| **received** | Sudah masuk stok (**On Hand**); tidak lagi dihitung sebagai Open order |
+| **cancelled** | Dibatalkan; tidak memengaruhi OH/OP |
 
 ### PO dan run ulang buffer
 
 **Run ulang buffer** = menjalankan lagi **Run full pipeline** di Analytics, scheduler harian (01:00), atau API integrasi `POST /api/analytics/integration/run`. Ini **bukan** tombol **Recalc & refresh**.
 
-#### Apa yang berubah vs tetap
-
 | Aspek | Setelah run ulang buffer |
 |--------|---------------------------|
-| **Record PO di database** | **Tetap ada** — tidak otomatis dibatalkan |
+| **Record PO di database** | Tetap ada — tidak otomatis dibatalkan |
 | **Buffer lama** | Status **Archived**; buffer **Active** baru (ID baru) |
-| **TOR / TOY / TOG** | **Berubah** (hasil GA terbaru) |
-| **On Hand (OH)** | **Di-reset ke TOY buffer baru** — tidak ada langkah “terima barang” di UI untuk mempertahankan OH lama |
-| **Open order (OP)** | Qty PO **confirmed** **tetap dijumlah** dalam NFE (UI tidak menutup PO setelah barang datang) |
-| **Jadwal order per hari** | Baris tabel = hasil **simulasi GA baru**, bukan salinan PO lama |
+| **TOR / TOY / TOG** | Berubah (hasil GA/simulasi terbaru) |
+| **On Hand (OH)** | **Dibawa terus** dari posisi terakhir (termasuk PO yang sudah diterima) — **tidak** direset ke TOY buffer baru |
+| **Open order (OP)** | Qty PO **confirmed** yang belum jatuh tempo tetap dijumlah dalam NFE, terhadap buffer yang baru |
+| **Auto-receive** | Tetap mengevaluasi PO `confirmed` yang lama terhadap hari acuan buffer **aktif saat ini** — PO tidak “terlewat” hanya karena buffernya sudah di-archive |
+| **Jadwal order per hari** | Baris tabel = hasil simulasi baru, bukan salinan PO lama |
 
-#### Hal yang sering membingungkan di UI
-
-1. **Daftar PO confirmed** di Replenishment (`confirmed_pos`) hanya menampilkan PO yang terikat **buffer aktif saat ini**. PO dibuat **sebelum** run ulang masih ada di database, tetapi bisa **tidak muncul** di daftar karena `buffer_id`-nya mengacu buffer yang sudah di-archive — sementara angka **Open order** tetap bisa > 0.
-
-2. **Dashboard — Confirmed PO** menghitung PO yang `order_date`-nya jatuh dalam jendela tanggal buffer **baru**. Jika tanggal PO di luar jendela simulasi baru, KPI bisa tidak menghitung PO yang masih berstatus confirmed.
-
-3. **Run ulang ≠ Recalc** — Gunakan **Recalc & refresh** bila hanya ingin memperbarui NFE dari OH/OP/QD tanpa mengganti TOR/TOY/TOG dan tanpa reset OH.
-
-#### Rekomendasi operasional
-
-```text
-Run buffer ulang  →  PO tetap di DB; OP masih mempengaruhi NFE
-                  →  OH di-reset; TOR/TOY/TOG baru; daftar PO di UI bisa tidak selaras
-
-Recalc saja         →  Buffer & PO sama; hanya NFE/zona diperbarui
-```
-
-- Sebelum run ulang: pastikan PO **confirmed** sudah sesuai rencana (UI tidak bisa membatalkan PO lama).
-- Setelah run ulang: cek **Open order** dan **NFE**; gunakan **Recalc & refresh** jika stok fisik berbeda dari TOY baru; koordinasi penutupan PO lama di luar UI jika perlu.
-- Hindari run ulang semua SKU (scheduler malam) pada saat banyak PO confirmed aktif, kecuali itu memang kebijakan refresh parameter buffer.
+**Catatan kecil yang masih berlaku:** kartu **Posisi operasional** di Replenishment (`operational.confirmed_pos`) hanya menampilkan PO yang `buffer_id`-nya cocok dengan buffer **aktif saat ini** — PO lama yang dibuat sebelum run ulang bisa tidak muncul di daftar pendek ini walau tetap benar dihitung di total **Open order**. Untuk melihat semua PO apa adanya (termasuk yang terikat buffer lama), buka halaman **Purchase Orders**.
 
 ### Aturan bisnis
 
@@ -302,16 +309,14 @@ Recalc saja         →  Buffer & PO sama; hanya NFE/zona diperbarui
 | Field UI | Sumber |
 |----------|--------|
 | TOR / TOY / TOG | Buffer aktif (RUN 3) |
-| On Hand, Open Order, NFE, Zona | Hitungan operasional hari ini |
-| Saran order (besar) | `suggested_order_qty` |
+| Posisi operasional (kartu **Current buffer position**) | On Hand, Open Order, NFE hari ini, dibandingkan ke TOR/TOY/TOG |
 | Tabel per tanggal — `order_qty` | Saran **residual** per hari di jendela buffer |
-| Riwayat PO | Daftar baca-only: id, status, qty, tanggal order |
 
-> `order_qty` per baris tanggal **bukan** qty PO yang sudah dikonfirmasi; itu sisa rekomendasi simulasi buffer setelah recalc.
+> `order_qty` per baris tanggal **bukan** qty PO yang sudah dikonfirmasi; itu sisa rekomendasi simulasi buffer setelah recalc. Riwayat PO per SKU ada di halaman **Purchase Orders** (filter by SKU), bukan di Replenishment.
 
-### API PO (di luar UI, untuk IT)
+### API PO (untuk IT / integrasi ERP)
 
-Endpoint `/api/purchase-orders` mendukung langkah tambahan (draft, receive, cancel) untuk integrasi ERP. **Tidak tercermin di layar Replenishment.** Rujukan: [README.md](../README.md#purchase-orders--operational-nfe-loop-operasional).
+Endpoint `/api/purchase-orders` (draft, confirm, receive, cancel, auto-receive) sekarang **juga** dipakai UI lewat halaman Purchase Orders — bukan hanya untuk integrasi eksternal. Rujukan lengkap: [README.md](../README.md#purchase-orders--operational-nfe-loop-operasional).
 
 ---
 
@@ -332,9 +337,8 @@ Scheduler **tidak** membuat PO otomatis, tetapi **run ulang buffer** semua SKU d
 |----------------|----------|----------|
 | Dataset belum siap | Belum ada master / demand | Unggah Master SKU + Demand |
 | No active buffer | Belum run analytics | **Run full pipeline** untuk SKU |
-| 409 PO duplikat | Sudah ada PO confirmed untuk SKU pada tanggal order yang sama | Gunakan tanggal order lain, atau centang **Force create** (uji); UI tidak bisa membatalkan PO lama |
-| Open order > 0 tapi daftar PO kosong | Buffer di-run ulang setelah PO dibuat | Lihat [PO dan run ulang buffer](#po-dan-run-ulang-buffer) |
-| OH “melompat” setelah run malam | Scheduler reset OH ke TOY baru | **Recalc** atau sesuaikan stok; hindari run ulang jika OH sudah diverifikasi |
+| 409 PO duplikat | Sudah ada PO confirmed untuk SKU pada tanggal order yang sama | Gunakan tanggal order lain, atau centang **Force create** (uji), atau batalkan PO lama dari halaman **Purchase Orders** |
+| Open order > 0 tapi kartu **confirmed_pos** di Replenishment kosong | Buffer di-run ulang setelah PO dibuat — kartu preview ini hanya menampilkan PO yang terikat buffer aktif saat ini | Lihat [PO dan run ulang buffer](#po-dan-run-ulang-buffer); daftar lengkap ada di halaman **Purchase Orders** |
 | UI tidak memuat data | API URL salah | Produksi: buka https://transtrack-ddmrp.skom.my.id; dev: `docker-compose.dev.yml` + http://localhost:3001 |
 
 ---

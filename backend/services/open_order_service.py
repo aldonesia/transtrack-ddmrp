@@ -194,16 +194,22 @@ def receive_po(
 def auto_receive_all_due_pos(db: Session) -> Dict[str, Any]:
     """Auto-receive confirmed POs whose lead time has elapsed.
 
-    "Elapsed" is judged against each SKU's own buffer reference date
-    (`DDMRPBuffer.start_date`, the app's simulated "today" — see
+    "Elapsed" is judged against each SKU's *current* active buffer reference
+    date (`DDMRPBuffer.start_date`, the app's simulated "today" — see
     `api/analytics.py:get_replenishment`), not wall-clock date, so this stays
     consistent with the NFE/zone math the rest of the operational loop uses.
+    Joins on the SKU's live active buffer rather than `PurchaseOrder.buffer_id`
+    — if Analytics & Buffer gets re-run before a PO is received, its original
+    buffer is archived and would otherwise pin this check to a stale "today".
     Received qty moves from open order (OP) into on-hand stock (OH) via
     `receive_po`.
     """
     due = (
         db.query(PurchaseOrder)
-        .join(DDMRPBuffer, DDMRPBuffer.id == PurchaseOrder.buffer_id)
+        .join(
+            DDMRPBuffer,
+            (DDMRPBuffer.sku == PurchaseOrder.sku) & (DDMRPBuffer.status == "Active"),
+        )
         .filter(
             PurchaseOrder.status == PO_STATUS_CONFIRMED,
             DDMRPBuffer.start_date.isnot(None),

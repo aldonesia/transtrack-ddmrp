@@ -8,17 +8,12 @@ import {
   getDashboardSummary,
   getReplenishmentPlan,
   listMasterSkus,
-  listPurchaseOrders,
   listSkus,
   recalcOperational,
   type DashboardSummary,
   type MasterSku,
-  type PurchaseOrder,
   type SkuRow,
-  type SkuZoneSnapshot,
 } from "@/lib/api";
-
-type ZoneKey = "RED" | "YELLOW" | "GREEN";
 
 const PAGE_SIZE = 8;
 
@@ -27,14 +22,6 @@ function fmtDateDdMmYy(iso: string | null | undefined): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
   if (m) return `${m[3]}/${m[2]}/${m[1].slice(-2)}`;
   return iso;
-}
-
-function addDaysIso(iso: string, days: number): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
-  if (!m) return iso;
-  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
 }
 
 function normZone(z: string | null | undefined): string {
@@ -139,9 +126,6 @@ export default function Replenishment() {
   const [poOrderDate, setPoOrderDate] = useState("");
   const [forceCreatePo, setForceCreatePo] = useState(false);
   const [poSubmitting, setPoSubmitting] = useState(false);
-  const [poHistory, setPoHistory] = useState<PurchaseOrder[]>([]);
-  const [showPoHistory, setShowPoHistory] = useState(true);
-  const [zonePanel, setZonePanel] = useState<ZoneKey | null>(null);
 
   const unit = (plan?.unit ?? "EA").toUpperCase();
   const selectedSkuMeta = useMemo(
@@ -166,26 +150,10 @@ export default function Replenishment() {
   const currentNfe = op?.nfe ?? todayRow?.nfe ?? 0;
   const todayOrderQty = op?.suggested_order_qty ?? todayRow?.order_qty ?? 0;
   const todayZone = normZone(op?.zone ?? todayRow?.zone);
-  const openOrderQty = op?.open_order ?? 0;
 
   const tor = plan?.tor ?? 0;
   const toy = plan?.toy ?? 0;
   const tog = plan?.tog ?? 0;
-
-  const skuZoneCounts = useMemo(() => {
-    const rows = plan?.recommendations ?? [];
-    let red = 0;
-    let yellow = 0;
-    let green = 0;
-    for (const r of rows) {
-      const z = normZone(r.zone);
-      const hasOrder = Number(r.order_qty) > 0;
-      if (z === "RED" && hasOrder) red += 1;
-      else if (z === "YELLOW" && hasOrder) yellow += 1;
-      else if (z === "GREEN" && !hasOrder) green += 1;
-    }
-    return { red, yellow, green };
-  }, [plan]);
 
   const filteredRows = useMemo(() => {
     const rows = plan?.recommendations ?? [];
@@ -200,10 +168,6 @@ export default function Replenishment() {
 
   const pageCount = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
   const pagedRows = filteredRows.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-
-  const etaDate = plan?.today_date
-    ? fmtDateDdMmYy(addDaysIso(plan.today_date, plan.leadtime_days))
-    : "—";
 
   const loadInitial = useCallback(async () => {
     setDashLoading(true);
@@ -240,12 +204,8 @@ export default function Replenishment() {
       const p = await getReplenishmentPlan(sku);
       setPlan(p);
       setPage(1);
-      const [d, pos] = await Promise.all([
-        getDashboardSummary(),
-        listPurchaseOrders(sku).catch(() => ({ total: 0, rows: [] as PurchaseOrder[] })),
-      ]);
+      const d = await getDashboardSummary();
       setDash(d);
-      setPoHistory(pos.rows ?? []);
     } catch (e: unknown) {
       setPlan(null);
       setErr(e instanceof Error ? e.message : String(e));
@@ -363,20 +323,6 @@ export default function Replenishment() {
   const redGlobal = dash?.zona_merah ?? 0;
   const yellowGlobal = dash?.zona_kuning ?? Math.max(0, totalNeed - redGlobal);
   const refDate = plan?.today_date ? fmtDateDdMmYy(plan.today_date) : "—";
-
-  const zoneSkuList: SkuZoneSnapshot[] = useMemo(() => {
-    if (!zonePanel || !dash?.sku_by_zone) return [];
-    return dash.sku_by_zone[zonePanel] ?? [];
-  }, [zonePanel, dash?.sku_by_zone]);
-
-  const zonePanelTitle =
-    zonePanel === "RED"
-      ? "Red zone"
-      : zonePanel === "YELLOW"
-        ? "Yellow zone"
-        : zonePanel === "GREEN"
-          ? "Green zone"
-          : "";
 
   return (
     <div className="space-y-5 animate-in fade-in duration-500">
@@ -610,62 +556,6 @@ export default function Replenishment() {
         </button>
       </div>
 
-      {/* Zone summary cards */}
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
-        <SummaryCard
-          title="Red zone"
-          value={String(dash?.zona_merah ?? skuZoneCounts.red)}
-          subtitle="click to view SKUs"
-          accent="red"
-          active={zonePanel === "RED"}
-          onClick={() => setZonePanel((z) => (z === "RED" ? null : "RED"))}
-        />
-        <SummaryCard
-          title="Yellow zone"
-          value={String(dash?.zona_kuning ?? skuZoneCounts.yellow)}
-          subtitle="click to view SKUs"
-          accent="amber"
-          active={zonePanel === "YELLOW"}
-          onClick={() => setZonePanel((z) => (z === "YELLOW" ? null : "YELLOW"))}
-        />
-        <SummaryCard
-          title="Green zone"
-          value={String(dash?.zona_hijau ?? skuZoneCounts.green)}
-          subtitle="click to view SKUs"
-          accent="emerald"
-          active={zonePanel === "GREEN"}
-          onClick={() => setZonePanel((z) => (z === "GREEN" ? null : "GREEN"))}
-        />
-        <SummaryCard
-          title="Total order today"
-          value={todayOrderQty > 0 ? todayOrderQty.toFixed(0) : "—"}
-          subtitle="for this SKU"
-          accent="white"
-        />
-        <SummaryCard
-          title="Confirmed PO"
-          value={String(dash?.confirmed_po_skus ?? 0)}
-          subtitle={
-            openOrderQty > 0 ? `${openOrderQty.toFixed(0)} on order` : "POs confirmed, not received"
-          }
-          accent="slate"
-        />
-      </div>
-
-      {zonePanel ? (
-        <ZoneSkuPanel
-          zone={zonePanel}
-          title={zonePanelTitle}
-          items={zoneSkuList}
-          selectedSku={selectedSku}
-          onClose={() => setZonePanel(null)}
-          onSelectSku={(sku) => {
-            setSelectedSku(sku);
-            setZoneFilter("ALL");
-          }}
-        />
-      ) : null}
-
       {/* Two columns */}
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-3">
         {/* Schedule table */}
@@ -848,75 +738,6 @@ export default function Replenishment() {
               </div>
             )}
           </div>
-
-          <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-xl space-y-3">
-            <h2 className="text-base font-bold text-white">Quick actions</h2>
-
-            {plan && todayOrderQty > 0 ? (
-              <div className="rounded-lg border border-amber-700/50 bg-amber-950/30 px-3 py-2.5 text-xs text-amber-100 leading-relaxed">
-                NFE is at the <strong>{todayZone || "buffer"}</strong> boundary. Recommended order
-                today: <strong>{todayOrderQty.toFixed(0)}</strong>.
-              </div>
-            ) : plan ? (
-              <div className="rounded-lg border border-emerald-800/40 bg-emerald-950/20 px-3 py-2.5 text-xs text-emerald-200">
-                No order required today for this SKU in the active window.
-              </div>
-            ) : null}
-
-            {plan ? (
-              <div className="rounded-lg border border-blue-800/40 bg-blue-950/25 px-3 py-2.5 text-xs text-blue-200 leading-relaxed">
-                Lead time <strong>{plan.leadtime_days} days</strong>. If ordered today (
-                {fmtDateDdMmYy(plan.today_date)}), stock is expected around{" "}
-                <strong>{etaDate}</strong>.
-              </div>
-            ) : null}
-
-            <button
-              type="button"
-              disabled={!plan || poSubmitting}
-              onClick={() => openCreatePoModal()}
-              className="flex w-full items-center justify-center gap-2 rounded-xl bg-red-600 py-3.5 text-sm font-bold text-white shadow-lg shadow-red-900/40 hover:bg-red-500 disabled:opacity-40"
-            >
-              <span aria-hidden>⚡</span>
-              {poSubmitting
-                ? "Processing…"
-                : `Create PO ${todayOrderQty > 0 ? todayOrderQty.toFixed(0) : ""} now`.trim()}
-            </button>
-
-            <div className="border-t border-slate-800 pt-3">
-              <button
-                type="button"
-                onClick={() => setShowPoHistory((v) => !v)}
-                className="text-xs font-semibold text-slate-400 hover:text-white"
-              >
-                {showPoHistory ? "Hide" : "Show"} PO history ({poHistory.length})
-              </button>
-              {showPoHistory && poHistory.length > 0 ? (
-                <ul className="mt-2 max-h-40 space-y-1.5 overflow-y-auto text-xs">
-                  {poHistory.map((po) => (
-                    <li
-                      key={po.id}
-                      className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-800 bg-slate-950/60 px-2 py-1.5"
-                    >
-                      <span className="font-mono text-slate-300">#{po.id}</span>
-                      <span className="capitalize text-slate-400">{po.status}</span>
-                      <span className="font-mono text-white">{po.qty}</span>
-                      <span className="text-slate-500">{fmtDateDdMmYy(po.order_date)}</span>
-                    </li>
-                  ))}
-                </ul>
-              ) : showPoHistory ? (
-                <p className="mt-2 text-xs text-slate-500">No purchase orders for this SKU yet.</p>
-              ) : null}
-            </div>
-
-            <Link
-              href="/analytics"
-              className="block text-center text-xs text-slate-500 hover:text-indigo-400 underline"
-            >
-              Re-run buffer in Analytics
-            </Link>
-          </div>
         </div>
       </div>
     </div>
@@ -928,168 +749,6 @@ function MetricChip({ label, value }: { label: string; value: string }) {
     <div className="pb-0.5">
       <p className="text-[10px] uppercase tracking-wide text-slate-500">{label}</p>
       <p className="text-sm font-mono font-medium text-slate-200">{value}</p>
-    </div>
-  );
-}
-
-function SummaryCard({
-  title,
-  value,
-  subtitle,
-  accent,
-  onClick,
-  active,
-}: {
-  title: string;
-  value: string;
-  subtitle: string;
-  accent: "red" | "amber" | "emerald" | "white" | "slate";
-  onClick?: () => void;
-  active?: boolean;
-}) {
-  const valueColor =
-    accent === "red"
-      ? "text-red-400"
-      : accent === "amber"
-        ? "text-amber-400"
-        : accent === "emerald"
-          ? "text-emerald-400"
-          : "text-white";
-  const border =
-    accent === "red"
-      ? "border-red-900/40"
-      : accent === "amber"
-        ? "border-amber-900/30"
-        : accent === "emerald"
-          ? "border-emerald-900/30"
-          : "border-slate-800";
-
-  const activeRing =
-    active && accent === "red"
-      ? "ring-2 ring-red-500/60"
-      : active && accent === "amber"
-        ? "ring-2 ring-amber-500/60"
-        : active && accent === "emerald"
-          ? "ring-2 ring-emerald-500/60"
-          : "";
-
-  const className = `rounded-xl border ${border} bg-slate-900/80 p-4 text-left w-full transition-colors ${activeRing} ${
-    onClick
-      ? "hover:bg-slate-800/90 cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-      : ""
-  }`;
-
-  const inner = (
-    <>
-      <p className="text-[10px] font-bold uppercase tracking-widest text-slate-500">{title}</p>
-      <p className={`mt-1 text-2xl font-bold tabular-nums ${valueColor}`}>{value}</p>
-      <p className="mt-0.5 text-[11px] text-slate-500">{subtitle}</p>
-    </>
-  );
-
-  if (onClick) {
-    return (
-      <button type="button" onClick={onClick} className={className}>
-        {inner}
-      </button>
-    );
-  }
-
-  return <div className={className}>{inner}</div>;
-}
-
-function ZoneSkuPanel({
-  zone,
-  title,
-  items,
-  selectedSku,
-  onClose,
-  onSelectSku,
-}: {
-  zone: ZoneKey;
-  title: string;
-  items: SkuZoneSnapshot[];
-  selectedSku: string;
-  onClose: () => void;
-  onSelectSku: (sku: string) => void;
-}) {
-  const border =
-    zone === "RED"
-      ? "border-red-900/50 bg-red-950/20"
-      : zone === "YELLOW"
-        ? "border-amber-900/40 bg-amber-950/15"
-        : "border-emerald-900/40 bg-emerald-950/15";
-
-  return (
-    <div className={`rounded-xl border ${border} p-4`}>
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h3 className="text-sm font-bold text-white">{title}</h3>
-          <p className="text-[11px] text-slate-400">
-            {items.length} SKU on the buffer planning start day (all active buffers)
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={onClose}
-          className="rounded-lg border border-slate-600 px-3 py-1.5 text-xs text-slate-300 hover:bg-slate-800"
-        >
-          Close
-        </button>
-      </div>
-
-      {items.length === 0 ? (
-        <p className="py-4 text-center text-sm text-slate-500">No SKU in this zone.</p>
-      ) : (
-        <div className="max-h-56 overflow-x-auto overflow-y-auto rounded-lg border border-slate-800/80">
-          <table className="w-full text-left text-sm">
-            <thead className="sticky top-0 bg-slate-950 text-[10px] uppercase tracking-wide text-slate-500">
-              <tr>
-                <th className="px-4 py-2 font-medium">SKU</th>
-                <th className="px-4 py-2 font-medium text-right">NFE</th>
-                <th className="px-4 py-2 font-medium text-right">Order qty</th>
-                <th className="px-4 py-2 font-medium text-right">TOY</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60">
-              {items.map((row) => {
-                const isSelected = row.sku === selectedSku;
-                return (
-                  <tr
-                    key={row.sku}
-                    className={
-                      isSelected ? "bg-blue-950/40" : "cursor-pointer hover:bg-slate-800/40"
-                    }
-                    onClick={() => onSelectSku(row.sku)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" || e.key === " ") {
-                        e.preventDefault();
-                        onSelectSku(row.sku);
-                      }
-                    }}
-                    tabIndex={0}
-                    role="button"
-                  >
-                    <td className="px-4 py-2 font-mono text-slate-200">{row.sku}</td>
-                    <td className="px-4 py-2 text-right font-mono tabular-nums text-slate-300">
-                      {row.nfe.toFixed(0)}
-                    </td>
-                    <td className="px-4 py-2 text-right font-mono tabular-nums text-slate-300">
-                      {row.order_qty > 0 ? row.order_qty.toFixed(0) : "—"}
-                    </td>
-                    <td className="px-4 py-2 text-right font-mono tabular-nums text-slate-500">
-                      {row.toy.toFixed(1)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <p className="mt-2 text-[10px] text-slate-500">
-        Click a row to open that SKU in the schedule below.
-      </p>
     </div>
   );
 }

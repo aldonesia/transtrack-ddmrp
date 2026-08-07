@@ -31,6 +31,8 @@ Semua endpoint integrasi memakai parameter **`sku_no`** (setara `sku` di API int
 
 Menjalankan pipeline penuh (sama dengan `POST /api/analytics/run`) dengan body berbasis `sku_no`.
 
+> **`use_forecast` per SKU:** endpoint ini memanggil fungsi internal yang sama dengan `POST /api/analytics/run`, jadi ikut tunduk pada field `sku_master.use_forecast` (diatur lewat UI Master SKU, bukan lewat body request ini). Kalau `false`, pipeline yang jalan adalah buffer v2 (QD dari demand aktual) meski dipanggil lewat endpoint integrasi v1 — bentuk response tetap sama.
+
 ### Request
 
 `Content-Type: application/json`
