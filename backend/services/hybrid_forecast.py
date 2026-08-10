@@ -16,6 +16,7 @@ from sklearn.preprocessing import MinMaxScaler
 warnings.filterwarnings("ignore")
 
 TRAIN_RATIO = 0.80
+ADI_THRESHOLD = 1.32
 
 
 def compute_metrics(actual, predicted, naive_err=None):
@@ -150,16 +151,35 @@ def forecast_croston(train, n, alpha=0.1):
 
 
 def clean_demand_adaptive(series, dates, adu=None, low_pct=0.02, verbose=True):
+    """Bersihkan anomali demand dengan threshold adaptif per SKU.
+    - Intermittent (ADI >= ADI_THRESHOLD): 0 valid, hanya buang outlier positif HIGH
+    - Smooth/Erratic (ADI < ADI_THRESHOLD): cleaning normal (LOW dan HIGH)
+    """
     series = np.array(series, dtype=float)
     if adu is None:
         adu = np.mean(series[series > 0])
 
-    low_thr = adu * low_pct
     nz = series[series > 0]
+    if len(nz) == 0:
+        return series.copy(), pd.DataFrame()
+
+    # Deteksi intermittent lewat jarak rata-rata antar hari non-zero.
+    nonzero_idx = np.where(series > 0)[0]
+    if len(nonzero_idx) > 1:
+        adi = np.mean(np.diff(nonzero_idx))
+    else:
+        adi = len(series)
+    is_intermittent = adi >= ADI_THRESHOLD
+
     Q1, Q3 = np.percentile(nz, 25), np.percentile(nz, 75)
     high_thr = Q3 + 2.0 * (Q3 - Q1)
+    low_thr = adu * low_pct
 
-    mask = (series < low_thr) | (series > high_thr)
+    if is_intermittent:
+        mask = (series > 0) & (series > high_thr)
+    else:
+        mask = (series < low_thr) | (series > high_thr)
+
     cleaned = series.copy()
     for i in np.where(mask)[0]:
         lo = max(0, i - 7)
@@ -185,6 +205,7 @@ def clean_demand_adaptive(series, dates, adu=None, low_pct=0.02, verbose=True):
         )
     rpt = pd.DataFrame(rows)
     if verbose and not rpt.empty:
+        print(f"  ADI      : {adi:.2f} ({'intermittent' if is_intermittent else 'smooth/erratic'})")
         print(f"  Threshold: LOW<{low_thr:.1f} | HIGH>{high_thr:.1f}")
         print(f"  Anomali  : {len(rpt)} hari")
         print(rpt.to_string(index=False))
