@@ -484,13 +484,26 @@ Development (API di host, frontend hot reload):
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 ```
 
-Reset DB + impor ulang `Data 2.xlsx` (dari root repo):
+Reset DB (kosongkan saja, tanpa impor):
 
 ```bash
 ./docker-reset-db.sh
 ```
 
 Setelah reset: upload master/demand lewat UI atau jalankan `backend/scripts/import_data2_xlsx.py`, lalu **Analytics → Run full pipeline** per SKU sebelum uji Replenishment / PO.
+
+### Reset + impor ulang sekaligus (mis. `Data 2 June.xlsx`)
+
+`./docker-reset-and-import.sh` menggabungkan reset + impor workbook Excel Data 2 (sheet `sku_master` → SKUMaster, sheet `sales` → DailyRecord) dalam satu langkah, dengan **backup `pg_dump` otomatis** dan konfirmasi eksplisit sebelum menghapus apa pun — dipakai untuk memuat ulang database **production** dengan dataset baru, bukan hanya lingkungan uji.
+
+```bash
+./docker-reset-and-import.sh                                    # default: resources_ext/Data 2 June.xlsx
+./docker-reset-and-import.sh --xlsx "resources_ext/Data 2.xlsx"  # workbook lain
+./docker-reset-and-import.sh --yes                               # lewati prompt (backup tetap jalan)
+./docker-reset-and-import.sh --skip-backup                       # lewati pg_dump (tidak disarankan di prod)
+```
+
+Urutan yang dijalankan: validasi workbook (kedua sheet ada & terbaca) → tampilkan `DATABASE_URL` target (password disamarkan) → minta operator mengetik `RESET PRODUCTION` → `pg_dump` ke `./backups/` (di-`.gitignore`) → `scripts/reset_database.py --yes` → `scripts/import_data2_xlsx.py --xlsx <file>`. Backup gagal = proses berhenti sebelum data dihapus. Setelah selesai, jalankan **Analytics → Run full pipeline** per SKU (data belum ada buffer aktif sampai langkah ini).
 
 ## Langkah uji open order (manual)
 

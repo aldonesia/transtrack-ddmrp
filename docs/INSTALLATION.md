@@ -124,6 +124,8 @@ docker compose exec -T backend python scripts/import_data2_xlsx.py \
 
 **Penting:** jalankan seeder **di dalam container** (`./docker-seed-master.sh`), bukan `python scripts/seed_data2_june.py` di host tanpa `DATABASE_URL` Postgres — data akan masuk SQLite lokal.
 
+**Untuk production** (reset total + impor `Data 2 June.xlsx` sekaligus, dengan backup otomatis): pakai `./docker-reset-and-import.sh` dari root repo alih-alih 3 langkah manual di atas — lihat [README.md § Docker & reset database](../README.md#docker--reset-database).
+
 Opsi seeder:
 
 ```bash
